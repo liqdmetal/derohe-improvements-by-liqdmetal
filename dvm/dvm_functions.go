@@ -365,6 +365,7 @@ func dvm_address_string(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool,
 		if err := p.DecodeCompressed([]byte(k)); err == nil {
 
 			addr := rpc.NewAddressFromKeys(p)
+			addr.Mainnet = globals.IsMainnet()
 			return true, addr.String()
 		}
 
