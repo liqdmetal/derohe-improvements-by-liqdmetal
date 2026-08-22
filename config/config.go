@@ -93,6 +93,12 @@ type CHAIN_CONFIG struct {
 	MAJOR_HF2_HEIGHT int64 // MAJOR HF2 applies here, changes pow
 	MAJOR_HF3_HEIGHT int64 // MAJOR HF3 applied here, changes/adds consensus rules
 	MAJOR_HF4_HEIGHT int64 // MAJOR HF4 applied here, changes/adds consensus rules
+	// K0_MIN_RING4_HEIGHT: from this height onward, NORMAL/BURN txs with
+	// ringsize < 4 are rejected (spec §9 K0, k0-fix-design.md Fix B1).
+	// Ringsize 2 exposes the signer by design (Extract_signer) and provides
+	// no anonymity set. SC_TX remains exempt until the SIGNER alternative
+	// (Fix C) lands. Mainnet: set post-HF3; testnet: 0 (immediate).
+	K0_MIN_RING4_HEIGHT int64
 
 	Dev_Address        string // to which address the integrator rewatd will go, if user doesn't specify integrator address'
 	Genesis_Tx         string
@@ -110,6 +116,7 @@ var Mainnet = CHAIN_CONFIG{Name: "mainnet",
 	MAJOR_HF2_HEIGHT:        481600,
 	MAJOR_HF3_HEIGHT:        7504640,
 	MAJOR_HF4_HEIGHT:        8000000, // not yet decided
+	K0_MIN_RING4_HEIGHT:     7600000, // post-HF3, mainnet
 
 	Genesis_Tx: "" +
 		"01" + // version
@@ -133,6 +140,7 @@ var Testnet = CHAIN_CONFIG{Name: "testnet", // testnet will always have last 3 b
 	MAJOR_HF2_HEIGHT: 4, // on testnet apply at 4
 	MAJOR_HF3_HEIGHT: 0, // on testnet apply at genesis
 	MAJOR_HF4_HEIGHT: 0, // on testnet apply at genesis
+	K0_MIN_RING4_HEIGHT: 0, // on testnet apply at genesis (immediate)
 
 	Genesis_Tx: "" +
 		"01" + // version
