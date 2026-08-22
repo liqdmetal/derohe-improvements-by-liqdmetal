@@ -20,6 +20,7 @@ package dvm
 
 import "fmt"
 import "bytes"
+import "strings"
 import "runtime/debug"
 import "encoding/binary"
 import "github.com/deroproject/derohe/cryptography/crypto"
@@ -35,8 +36,28 @@ import "github.com/deroproject/graviton"
 // 1 OPEN
 // 2 PRIVATE
 type SC_META_DATA struct {
-	Type     byte        // 0  Open, 1 Private
+	Type     byte        // 0  Open, 1 Private. High bit 0x80 = NoSigner (K0 Fix B2)
 	DataHash crypto.Hash // hash of SC data tree is here, so as the meta tree verifies all  SC DATA
+}
+
+// K0 Fix B2: NoSigner is the high bit of the Type byte. Set = the contract
+// declares it does NOT call SIGNER(), so ringsize-2 SC_TX calls are
+// rejected (the ringsize-2 ring exposes the signer by design). Unset =
+// uses_signer (preserving behavior for existing contracts).
+const SC_META_NOSIGNER_BIT byte = 0x80
+
+// NoSigner reports whether the contract declares it does not use SIGNER().
+func (meta *SC_META_DATA) NoSigner() bool {
+	return meta.Type&SC_META_NOSIGNER_BIT != 0
+}
+
+// SetNoSigner sets/clears the NoSigner bit, preserving the Type low bits.
+func (meta *SC_META_DATA) SetNoSigner(v bool) {
+	if v {
+		meta.Type |= SC_META_NOSIGNER_BIT
+	} else {
+		meta.Type &^= SC_META_NOSIGNER_BIT
+	}
 }
 
 // serialize the structure
@@ -81,6 +102,23 @@ func SC_Code_Key(scid crypto.Hash) []byte {
 }
 func SC_Asset_Key(asset crypto.Hash) []byte {
 	return asset[:]
+}
+
+// ContractUsesSigner scans a parsed contract's function lines for any call
+// to SIGNER() (case-insensitive). Used at install time for K0 Fix B2: if a
+// contract never calls SIGNER(), it can be marked NoSigner and ringsize-2
+// SC_TX calls to it are rejected (the ringsize-2 ring exposes the signer).
+func ContractUsesSigner(sc SmartContract) bool {
+	for _, fn := range sc.Functions {
+		for _, line := range fn.Lines {
+			for _, tok := range line {
+				if strings.EqualFold(tok, "SIGNER(") || strings.EqualFold(tok, "SIGNER") {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // used to wrap a graviton tree, so it could be discarded at any time

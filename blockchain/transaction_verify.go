@@ -24,6 +24,7 @@ import (
 
 	"github.com/deroproject/derohe/block"
 	"github.com/deroproject/derohe/config"
+	"github.com/deroproject/derohe/dvm"
 	"github.com/deroproject/derohe/cryptography/bn256"
 	"github.com/deroproject/derohe/cryptography/crypto"
 	"github.com/deroproject/derohe/globals"
@@ -303,6 +304,28 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 
 		if tx.Payloads[t].Statement.RingSize > 128 { // ring size current limited to 128
 			return fmt.Errorf("RingSize for %d statement cannot be more than 128.Actual %d", t, tx.Payloads[t].Statement.RingSize)
+		}
+
+		// K0 Fix B2 (k0-fix-design.md): a ringsize-2 SC_TX exposes the
+		// signer by design (the ring IS sender+receiver, parity selects the
+		// sender). If the invoked contract declares it does NOT use
+		// SIGNER() (NoSigner bit set at install via AST scan), a ringsize-2
+		// call is rejected — the caller should use ringsize >= 4. Contracts
+		// that genuinely call SIGNER() keep ringsize 2 (their owner-gated
+		// entrypoints require it until the verify_sig migration, Fix C).
+		if tx.TransactionType == transaction.SC_TX && tx.Payloads[t].Statement.RingSize == 2 && !tx.Payloads[t].SCID.IsZero() {
+			if version, verr := chain.ReadBlockSnapshotVersion(tx.BLID); verr == nil {
+				if ss_b2, serr := chain.Store.Balance_store.LoadSnapshot(version); serr == nil {
+					if sc_meta_tree, terr := ss_b2.GetTree(config.SC_META); terr == nil {
+						if meta_bytes, merr := sc_meta_tree.Get(dvm.SC_Meta_Key(tx.Payloads[t].SCID)); merr == nil && len(meta_bytes) >= 1 {
+							var meta dvm.SC_META_DATA
+							if meta.UnmarshalBinary(meta_bytes) == nil && meta.NoSigner() {
+								return fmt.Errorf("K0 Fix B2: ringsize-2 SC_TX rejected — contract %s declares no SIGNER() usage; use ringsize >= 4", tx.Payloads[t].SCID)
+							}
+						}
+					}
+				}
+			}
 		}
 
 		if !crypto.IsPowerOf2(len(tx.Payloads[t].Statement.Publickeylist_pointers) / int(tx.Payloads[t].Statement.Bytes_per_publickey)) {

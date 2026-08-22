@@ -332,6 +332,14 @@ func (chain *Blockchain) process_transaction_sc(cache map[crypto.Hash]*graviton.
 		if _, ok := sc.Functions["InitializePrivate"]; ok {
 			meta.Type = 1
 		}
+		// K0 Fix B2: auto-detect SIGNER() usage. If the contract never
+		// calls SIGNER(), mark it NoSigner so ringsize-2 SC_TX calls to it
+		// are rejected (the ringsize-2 ring exposes the signer by design).
+		// Existing contracts (bit unset) default to uses_signer=true,
+		// preserving behavior.
+		if !dvm.ContractUsesSigner(sc) {
+			meta.SetNoSigner(true)
+		}
 
 		w_sc_data_tree = dvm.Wrapped_tree(cache, ss, scid)
 
