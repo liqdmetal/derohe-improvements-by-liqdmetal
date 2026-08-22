@@ -49,6 +49,17 @@ already what every node runs on every tx.
 
 ## 3. The intrinsic: `verify_proof(statement_hex String, proof_hex String) -> Uint64`
 
+> **UPDATE (PoC settled the format):** the implemented signature is
+> `verify_proof(tx_hex String, scid_index Uint64, ctx_hex String) -> Uint64`.
+> DERO's tx serialization deliberately strips the expanded statement
+> material (ring, CLn, CRn — all "expanded from graviton store"), so the
+> contract supplies the context blob: for each of the N ring members,
+> `[ring key (33B) | CLn (33B) | CRn (33B)]` concatenated (99·N bytes, hex).
+> These are public values; the contract stores them at setup. The VM
+> splices them into the deserialized statement and runs `Proof.Verify`.
+> The context is the binding — the contract verifies against ITS OWN ring
+> + balance vectors. PoC implemented and tested in `dvm/verify_proof_test.go`.
+
 ### 3.1 What a contract would do
 
 A contract stores a *public statement* (e.g. an owner's membership claim)

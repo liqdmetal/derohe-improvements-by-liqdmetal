@@ -30,6 +30,7 @@ import "github.com/blang/semver/v4"
 import "github.com/deroproject/derohe/rpc"
 import "github.com/deroproject/derohe/cryptography/crypto"
 import "github.com/deroproject/derohe/cryptography/bn256"
+import "github.com/deroproject/derohe/transaction"
 
 // this files defines  external functions which can be called in DVM
 // for example to load and store data from the blockchain and other basic functions
@@ -101,6 +102,7 @@ func init() {
 	func_table["verify_commit"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 45000, StorageCost: 0, PtrU: dvm_verify_commit}}   // P0-3: confidential settlement
 	func_table["asset_balance"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 2000, StorageCost: 0, PtrU: dvm_asset_balance}}   // I1: read SC's own stored balance for any asset (incl. DERO)
 	func_table["ec_add"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 15000, StorageCost: 0, PtrS: dvm_ec_add}}               // I2: homomorphic accumulation of commitments
+	func_table["verify_proof"] = []func_data{func_data{Range: semver.MustParseRange(">=10.0.0"), ComputeCost: 2000000, StorageCost: 0, PtrU: dvm_verify_proof}} // P1-1: ZK proof verification in-VM (native hook)
 }
 
 // this will handle all internal functions which may be required/necessary to expand DVM functionality
@@ -845,4 +847,96 @@ func dvm_ec_add(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result 
 
 	sum := new(bn256.G1).Add(&p1, &p2)
 	return true, hex.EncodeToString(sum.EncodeCompressed())
+}
+
+// dvm_verify_proof verifies a DERO aggregate Bulletproof inside the VM.
+// verify_proof(tx_hex String, scid_index Uint64, ctx_hex String) -> Uint64 (0/1)
+//
+// The contract supplies a fully-serialized transaction (which carries the
+// statement's C/D/pointers/roothash + the proof) plus a context blob of
+// the expanded statement material DERO's serialization deliberately omits:
+// for each of the N ring members, [ring key (33B) | CLn (33B) | CRn (33B)]
+// concatenated (99*N bytes, hex). These are public values (the ring and the
+// per-member encrypted-balance vectors at the tx's height) — a contract
+// stores them at setup or receives them from the prover. The VM splices
+// them into the statement and runs the same audited Proof.Verify the nodes
+// run on every tx. This is the P1-1 native hook — NOT VM-interpreted group
+// arithmetic.
+//
+// The context is the binding: the contract verifies the proof against ITS
+// OWN ring + balance vectors, so a caller cannot swap in a statement that
+// verifies against an arbitrary ring.
+func dvm_verify_proof(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result uint64) {
+	checkargscount(3, len(expr.Args))
+
+	tx_hex, ok := dvm.eval(expr.Args[0]).(string)
+	if !ok {
+		panic("verify_proof: tx_hex must be a string (hex)")
+	}
+	idx, ok := dvm.eval(expr.Args[1]).(uint64)
+	if !ok {
+		panic("verify_proof: scid_index must be uint64")
+	}
+	ctx_hex, ok := dvm.eval(expr.Args[2]).(string)
+	if !ok {
+		panic("verify_proof: ctx_hex must be a string (hex)")
+	}
+
+	tx_bytes, err := hex.DecodeString(tx_hex)
+	if err != nil {
+		return true, uint64(0)
+	}
+	ctx, err := hex.DecodeString(ctx_hex)
+	if err != nil || len(ctx) == 0 || len(ctx)%99 != 0 {
+		return true, uint64(0) // malformed context -> 0
+	}
+	n := len(ctx) / 99
+
+	var tx transaction.Transaction
+	if err := tx.Deserialize(tx_bytes); err != nil {
+		return true, uint64(0) // malformed tx -> 0, never panic
+	}
+
+	if int(idx) >= len(tx.Payloads) {
+		return true, uint64(0) // index out of range
+	}
+	if n != int(tx.Payloads[idx].Statement.RingSize) {
+		return true, uint64(0) // context ring size mismatch -> 0
+	}
+
+	// splice the contract-supplied expanded statement material into the
+	// deserialized statement (serialization carries only C/D/pointers)
+	stmt := &tx.Payloads[idx].Statement
+	stmt.Publickeylist = nil
+	stmt.CLn = nil
+	stmt.CRn = nil
+	for i := 0; i < n; i++ {
+		off := i * 99
+		var pk, cl, cr bn256.G1
+		if err := pk.DecodeCompressed(ctx[off : off+33]); err != nil {
+			return true, uint64(0)
+		}
+		if err := cl.DecodeCompressed(ctx[off+33 : off+66]); err != nil {
+			return true, uint64(0)
+		}
+		if err := cr.DecodeCompressed(ctx[off+66 : off+99]); err != nil {
+			return true, uint64(0)
+		}
+		stmt.Publickeylist = append(stmt.Publickeylist, &pk)
+		stmt.CLn = append(stmt.CLn, &cl)
+		stmt.CRn = append(stmt.CRn, &cr)
+	}
+
+	// same call pattern as blockchain/transaction_verify.go:482
+	valid := tx.Payloads[idx].Proof.Verify(
+		tx.Payloads[idx].SCID,
+		int(idx),
+		stmt,
+		tx.GetHash(),
+		tx.Payloads[idx].BurnValue,
+	)
+	if valid {
+		return true, uint64(1)
+	}
+	return true, uint64(0)
 }
