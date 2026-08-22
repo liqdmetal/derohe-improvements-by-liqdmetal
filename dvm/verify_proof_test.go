@@ -178,8 +178,10 @@ func TestVerifyProof(t *testing.T) {
 		t.Fatalf("valid tx: verify_proof=%d want 1", res)
 	}
 
-	// wrong context (flip first ring byte) -> 0
-	wrongCtx := "00" + ctx[2:]
+	// wrong context (flip a byte in the middle of the ring section) -> 0
+	ctxb := []byte(ctx)
+	ctxb[len(ctxb)/2] ^= 0xff
+	wrongCtx := string(ctxb)
 	if res := call(txhex, 0, wrongCtx); res != 0 {
 		t.Fatal("wrong context: verify_proof accepted")
 	}
