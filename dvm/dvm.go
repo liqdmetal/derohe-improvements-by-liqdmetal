@@ -56,6 +56,11 @@ type Variable struct {
 	Type        Vtype  `cbor:"T,omitempty" json:"T,omitempty"` // we have only 2 data types
 	ValueUint64 uint64 `cbor:"V,omitempty" json:"VI,omitempty"`
 	ValueString string `cbor:"V,omitempty" json:"VS,omitempty"`
+	// Array holds RAM-array elements (L3). Locals-only: contracts cannot
+	// STORE an array (STORE takes scalars), so this never touches the
+	// serialized SC state — consensus-neutral. Pointer keeps Variable
+	// comparable (it is used as a map key in RamStore/SC state).
+	Array *[]Variable `cbor:"A,omitempty" json:"A,omitempty"`
 }
 
 type Function struct {
@@ -665,6 +670,42 @@ func (dvm *DVM_Interpreter) interpret_DIM(line []string) (newIP uint64, err erro
 	for i := 0; i < len(line)-2; i++ {
 		if line[i] != "," { // ignore separators
 
+			// L3: array form — DIM a ( n ) AS type  (or DIM a(5))
+			if i+2 < len(line) && line[i+1] == "(" {
+				if err = dvm.gateControlFlow("DIM arrays"); err != nil {
+					return
+				}
+				// find the matching ")"
+				j := i + 2
+				for j < len(line) && line[j] != ")" {
+					j++
+				}
+				if j >= len(line) {
+					return 0, fmt.Errorf("Invalid DIM array syntax: missing ')'")
+				}
+				size, e := strconv.ParseUint(line[i+2], 0, 64)
+				if e != nil {
+					return 0, fmt.Errorf("Invalid DIM array size %q", line[i+2])
+				}
+				if size > 1024 {
+					return 0, fmt.Errorf("DIM array size %d exceeds limit 1024", size)
+				}
+				if !check_valid_name(line[i]) {
+					return 0, fmt.Errorf("function name \"%s\", variable name \"%s\" contains invalid characters", dvm.f.Name, line[i])
+				}
+				if _, ok := dvm.Locals[line[i]]; ok {
+					return 0, fmt.Errorf("function name \"%s\", variable name \"%s\" already defined", dvm.f.Name, line[i])
+				}
+				arr := make([]Variable, size+1) // indices 0..size
+				for k := range arr {
+					arr[k] = Variable{Name: line[i], Type: data_type}
+				}
+				arrp := arr
+				dvm.Locals[line[i]] = Variable{Name: line[i], Type: data_type, Array: &arrp}
+				i = j // skip the size tokens
+				continue
+			}
+
 			if !check_valid_name(line[i]) {
 				return 0, fmt.Errorf("function name \"%s\", variable name \"%s\" contains invalid characters", dvm.f.Name, line[i])
 			}
@@ -695,6 +736,63 @@ func (dvm *DVM_Interpreter) interpret_DIM(line []string) (newIP uint64, err erro
 
 // process LET statement
 func (dvm *DVM_Interpreter) interpret_LET(line []string) (newIP uint64, err error) {
+
+	// L3: array-element assignment — LET a [ idx ] = expr
+	if len(line) >= 4 && line[1] == "[" {
+		// find the closing "]"
+		j := 2
+		for j < len(line) && line[j] != "]" {
+			j++
+		}
+		if j+1 >= len(line) || !strings.EqualFold(line[j+1], "=") {
+			return 0, fmt.Errorf("Invalid LET array syntax: LET a[idx] = expr")
+		}
+		if err = dvm.gateControlFlow("array assignment"); err != nil {
+			return
+		}
+		varName := line[0]
+		v, ok := dvm.Locals[varName]
+		if !ok || v.Array == nil {
+			return 0, fmt.Errorf("function name \"%s\", variable \"%s\" is not an array", dvm.f.Name, varName)
+		}
+		arr := *v.Array
+		// the index may be a literal or an expression (e.g. a loop variable)
+		idxExpr, perr := parser.ParseExpr(strings.Join(line[2:j], " "))
+		if perr != nil {
+			return 0, perr
+		}
+		idxVal := dvm.eval(idxExpr)
+		idx, ok := idxVal.(uint64)
+		if !ok {
+			return 0, fmt.Errorf("array index must be Uint64, got %T", idxVal)
+		}
+		if idx >= uint64(len(arr)) {
+			return 0, fmt.Errorf("array index %d out of bounds (len %d)", idx, len(arr))
+		}
+		expr, perr := parser.ParseExpr(strings.Join(line[j+2:], " "))
+		if perr != nil {
+			return 0, perr
+		}
+		expr_result := dvm.eval(expr)
+		switch arr[idx].Type {
+		case Uint64:
+			val, ok := expr_result.(uint64)
+			if !ok {
+				return 0, fmt.Errorf("array element is Uint64, expression is %T", expr_result)
+			}
+			arr[idx].ValueUint64 = val
+		case String:
+			val, ok := expr_result.(string)
+			if !ok {
+				return 0, fmt.Errorf("array element is String, expression is %T", expr_result)
+			}
+			arr[idx].ValueString = val
+		default:
+			panic("Unhandled data_type")
+		}
+		dvm.Locals[varName] = v
+		return
+	}
 
 	if len(line) <= 2 || !strings.EqualFold(line[1], "=") {
 		err = fmt.Errorf("Invalid LET syntax")
@@ -952,6 +1050,33 @@ func (dvm *DVM_Interpreter) eval(exp ast.Expr) interface{} {
 
 	case *ast.BinaryExpr:
 		return dvm.evalBinaryExpr(exp)
+	case *ast.IndexExpr: // L3: array element read — a [ idx ]
+		name, ok := exp.X.(*ast.Ident)
+		if !ok {
+			panic(fmt.Sprintf("array index on non-identifier %+v", exp.X))
+		}
+		idxVal := dvm.eval(exp.Index)
+		idx, ok := idxVal.(uint64)
+		if !ok {
+			panic(fmt.Sprintf("array index must be Uint64, got %T", idxVal))
+		}
+		v, ok := dvm.Locals[name.Name]
+		if !ok || v.Array == nil {
+			panic(fmt.Sprintf("variable \"%s\" is not an array", name.Name))
+		}
+		arr := *v.Array
+		if idx >= uint64(len(arr)) {
+			panic(fmt.Sprintf("array index %d out of bounds (len %d)", idx, len(arr)))
+		}
+		el := arr[idx]
+		switch el.Type {
+		case Uint64:
+			return el.ValueUint64
+		case String:
+			return el.ValueString
+		default:
+			panic("unexpected data type")
+		}
 	case *ast.Ident: // it's a variable,
 		if _, ok := dvm.Locals[exp.Name]; !ok {
 			panic(fmt.Sprintf("function name \"%s\", variable name \"%s\"  is used without definition", dvm.f.Name, exp.Name))

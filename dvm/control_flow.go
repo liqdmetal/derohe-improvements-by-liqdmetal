@@ -24,6 +24,7 @@ package dvm
 
 import (
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"math"
 	"strconv"
@@ -289,4 +290,19 @@ func (i *DVM_Interpreter) interpret_GOSUB(line []string) (newIP uint64, err erro
 	// last line — RETURN then ends the function, which is correct)
 	i.CallStack = append(i.CallStack, i.nextLineAfter(i.IP))
 	return target, nil
+}
+
+// dvm_arrlen returns the length of a RAM array (L3). arrlen(name String) -> Uint64.
+// The name is the identifier as a string literal.
+func dvm_arrlen(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result uint64) {
+	checkargscount(1, len(expr.Args))
+	name, ok := dvm.eval(expr.Args[0]).(string)
+	if !ok {
+		panic("arrlen: argument must be a string (array variable name)")
+	}
+	v, ok := dvm.Locals[name]
+	if !ok || v.Array == nil {
+		panic(fmt.Sprintf("arrlen: variable \"%s\" is not an array", name))
+	}
+	return true, uint64(len(*v.Array))
 }

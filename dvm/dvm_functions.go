@@ -92,6 +92,7 @@ func init() {
 	func_table["strlen"] = []func_data{func_data{Range: semver.MustParseRange(">=0.0.0"), ComputeCost: 20000, StorageCost: 0, PtrU: dvm_strlen}}
 	func_table["substr"] = []func_data{func_data{Range: semver.MustParseRange(">=0.0.0"), ComputeCost: 20000, StorageCost: 0, PtrS: dvm_substr}}
 	func_table["panic"] = []func_data{func_data{Range: semver.MustParseRange(">=0.0.0"), ComputeCost: 10000, StorageCost: 0, PtrU: dvm_panic}}
+	func_table["arrlen"] = []func_data{func_data{Range: semver.MustParseRange(">=10.0.0"), ComputeCost: 1000, StorageCost: 0, PtrU: dvm_arrlen}} // L3: array length
 }
 
 // this will handle all internal functions which may be required/necessary to expand DVM functionality
