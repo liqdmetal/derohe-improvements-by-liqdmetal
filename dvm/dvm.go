@@ -488,6 +488,10 @@ type DVM_Interpreter struct {
 	// Gated on DVM version >= 10.0.0 (control_flow.go).
 	CallStack []uint64
 
+	// Constants holds CONST declarations (L7): name -> value. Immutable —
+	// LET on a constant is rejected. Locals-only, consensus-neutral.
+	Constants map[string]Variable
+
 }
 
 func (i *DVM_Interpreter) incrementIP(newip uint64) (line []string, err error) {
@@ -567,6 +571,8 @@ func (i *DVM_Interpreter) interpret_SmartContract() (err error) {
 		// L1/L2 structured control flow (gated on DVM >= 10.0.0)
 		case strings.EqualFold(line[0], "GOSUB"):
 			newIP, err = i.interpret_GOSUB(line[1:])
+		case strings.EqualFold(line[0], "CONST"):
+			newIP, err = i.interpret_CONST(line[1:])
 		case strings.EqualFold(line[0], "FOR"):
 			newIP, err = i.interpret_FOR(line[1:])
 		case strings.EqualFold(line[0], "NEXT"):
@@ -801,6 +807,10 @@ func (dvm *DVM_Interpreter) interpret_LET(line []string) (newIP uint64, err erro
 
 	if _, ok := dvm.Locals[line[0]]; !ok {
 		err = fmt.Errorf("function name \"%s\", variable name \"%s\"  is used without definition", dvm.f.Name, line[0])
+		return
+	}
+	if _, isConst := dvm.resolveConst(line[0]); isConst {
+		err = fmt.Errorf("function name \"%s\", constant \"%s\" is immutable (CONST)", dvm.f.Name, line[0])
 		return
 	}
 	result := dvm.Locals[line[0]]
@@ -1078,6 +1088,17 @@ func (dvm *DVM_Interpreter) eval(exp ast.Expr) interface{} {
 			panic("unexpected data type")
 		}
 	case *ast.Ident: // it's a variable,
+		// L7: resolve constants first (immutable named values)
+		if cv, ok := dvm.resolveConst(exp.Name); ok {
+			switch cv.Type {
+			case Uint64:
+				return cv.ValueUint64
+			case String:
+				return cv.ValueString
+			default:
+				panic("unexpected data type")
+			}
+		}
 		if _, ok := dvm.Locals[exp.Name]; !ok {
 			panic(fmt.Sprintf("function name \"%s\", variable name \"%s\"  is used without definition", dvm.f.Name, exp.Name))
 

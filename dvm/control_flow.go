@@ -354,3 +354,56 @@ func dvm_mapkeys(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result
 	sort.Strings(keys)
 	return true, strings.Join(keys, ",")
 }
+
+// interpret_CONST processes "CONST name = value" (L7). Declares an
+// immutable named constant in the interpreter's Constants map. Value may
+// be a uint64 literal or a string literal. Gated >= 10.0.0.
+func (i *DVM_Interpreter) interpret_CONST(line []string) (newIP uint64, err error) {
+	if err = i.gateControlFlow("CONST"); err != nil {
+		return
+	}
+	// CONST name = value
+	if len(line) < 3 || !strings.EqualFold(line[1], "=") {
+		return 0, fmt.Errorf("Invalid CONST syntax: CONST name = value")
+	}
+	name := line[0]
+	if !check_valid_name(name) {
+		return 0, fmt.Errorf("CONST name \"%s\" contains invalid characters", name)
+	}
+	if _, ok := i.Locals[name]; ok {
+		return 0, fmt.Errorf("CONST \"%s\" conflicts with a variable of the same name", name)
+	}
+	if i.Constants != nil {
+		if _, ok := i.Constants[name]; ok {
+			return 0, fmt.Errorf("CONST \"%s\" already declared", name)
+		}
+	}
+	valStr := strings.Join(line[2:], " ")
+	// string literal (quoted) or uint64
+	if len(valStr) >= 2 && strings.HasPrefix(valStr, "\"") && strings.HasSuffix(valStr, "\"") {
+		if i.Constants == nil {
+			i.Constants = map[string]Variable{}
+		}
+		i.Constants[name] = Variable{Name: name, Type: String, ValueString: valStr[1 : len(valStr)-1]}
+		return 0, nil
+	}
+	val, e := strconv.ParseUint(valStr, 0, 64)
+	if e != nil {
+		return 0, fmt.Errorf("CONST value must be a uint64 or string literal, got %q", valStr)
+	}
+	if i.Constants == nil {
+		i.Constants = map[string]Variable{}
+	}
+	i.Constants[name] = Variable{Name: name, Type: Uint64, ValueUint64: val}
+	return 0, nil
+}
+
+// resolveConst looks up a constant by name (L7). Returns (value, true) if
+// found.
+func (i *DVM_Interpreter) resolveConst(name string) (Variable, bool) {
+	if i.Constants == nil {
+		return Variable{}, false
+	}
+	v, ok := i.Constants[name]
+	return v, ok
+}
