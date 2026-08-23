@@ -343,10 +343,11 @@ func (chain *Blockchain) process_transaction_sc(cache map[crypto.Hash]*graviton.
 		// are committed into the chain state root (blockchain.go sc_change_cache
 		// -> tree hash). If a B2 node sets it before the fork while a legacy
 		// node doesn't, the same block produces DIFFERENT state roots on the
-		// two node types -> instant chain split. Gated on MAJOR_HF3_HEIGHT
-		// (the post-HF3 hard-fork window, same as the B1 floor targets);
-		// pre-fork installs write byte-identical meta to today.
-		if bl_height >= uint64(globals.Config.MAJOR_HF3_HEIGHT) && !dvm.ContractUsesSigner(sc) {
+		// two node types -> instant chain split. Gated on K0_MIN_RING4_HEIGHT
+		// (the same post-HF3 activation height as the B1 floor, PR #82 — the
+		// two K0 consensus rules turn on together); pre-fork installs write
+		// byte-identical meta to today.
+		if bl_height >= uint64(globals.Config.K0_MIN_RING4_HEIGHT) && !dvm.ContractUsesSigner(sc) {
 			meta.SetNoSigner(true)
 		}
 

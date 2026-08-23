@@ -92,6 +92,12 @@ type CHAIN_CONFIG struct {
 	HF2_HEIGHT       int64 // second HF applie here
 	MAJOR_HF2_HEIGHT int64 // MAJOR HF2 applies here, changes pow
 	MAJOR_HF3_HEIGHT int64 // MAJOR HF3 applied here, changes/adds consensus rules
+	// K0_MIN_RING4_HEIGHT: from this height onward, NORMAL/BURN txs with
+	// ringsize < 4 are rejected (PR #82, K0 Fix B1) AND ringsize-2 SC_TX
+	// requires the contract to declare SIGNER() usage (this PR, K0 Fix B2).
+	// Single activation height shared by B1 + B2 so the SC rules turn on
+	// with the floor.
+	K0_MIN_RING4_HEIGHT int64
 
 	Dev_Address        string // to which address the integrator rewatd will go, if user doesn't specify integrator address'
 	Genesis_Tx         string
@@ -108,6 +114,7 @@ var Mainnet = CHAIN_CONFIG{Name: "mainnet",
 	HF2_HEIGHT:              29000,
 	MAJOR_HF2_HEIGHT:        481600,
 	MAJOR_HF3_HEIGHT:        7504640,
+	K0_MIN_RING4_HEIGHT:     7600000, // post-HF3, mainnet (shared B1+B2 activation)
 
 	Genesis_Tx: "" +
 		"01" + // version
@@ -130,6 +137,7 @@ var Testnet = CHAIN_CONFIG{Name: "testnet", // testnet will always have last 3 b
 	HF2_HEIGHT:       0, // on testnet apply at genesis
 	MAJOR_HF2_HEIGHT: 4, // on testnet apply at 4
 	MAJOR_HF3_HEIGHT: 0, // on testnet apply at genesis
+	K0_MIN_RING4_HEIGHT: 0, // on testnet apply at genesis (immediate, shared B1+B2)
 
 	Genesis_Tx: "" +
 		"01" + // version
