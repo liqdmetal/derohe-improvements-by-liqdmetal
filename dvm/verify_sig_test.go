@@ -359,3 +359,76 @@ func TestEcAdd(t *testing.T) {
 	}
 	t.Logf("ec_add OK: homomorphic (c1+c2==c3), commutative, valid point")
 }
+
+// TestEcMul: scalar multiplication — the homomorphic counterpart to
+// ec_add. ec_mul(c, 2) == ec_add(c, c), and ec_mul(ec_mul(c, k), j) ==
+// ec_mul(c, k*j). Combined with ec_add, a contract can do point
+// derivation and key blinding entirely in-VM.
+func TestEcMul(t *testing.T) {
+	dvm := &DVM_Interpreter{
+		Version: semver.MustParse("9.0.0"),
+		State:   &Shared_State{},
+	}
+	mkStr := func(s string) ast.Expr {
+		return &ast.BasicLit{Kind: token.STRING, Value: "\"" + s + "\""}
+	}
+	mkUint := func(v uint64) ast.Expr {
+		return &ast.BasicLit{Kind: token.INT, Value: strconv.FormatUint(v, 10)}
+	}
+	commitExpr := func(v uint64, b string) *ast.CallExpr {
+		return &ast.CallExpr{Fun: &ast.Ident{Name: "pedersen_commit"},
+			Args: []ast.Expr{mkUint(v), mkStr(b)}}
+	}
+	mulExpr := func(p string, s uint64) *ast.CallExpr {
+		return &ast.CallExpr{Fun: &ast.Ident{Name: "ec_mul"},
+			Args: []ast.Expr{mkStr(p), mkUint(s)}}
+	}
+	addExpr := func(p1, p2 string) *ast.CallExpr {
+		return &ast.CallExpr{Fun: &ast.Ident{Name: "ec_add"},
+			Args: []ast.Expr{mkStr(p1), mkStr(p2)}}
+	}
+
+	b := "0000000000000000000000000000000000000000000000000000000000000001"
+	_, c1 := dvm_pedersen_commit(dvm, commitExpr(100, b))
+
+	// homomorphic: ec_mul(c, 2) == ec_add(c, c)
+	_, doubled := dvm_ec_mul(dvm, mulExpr(c1, 2))
+	_, added := dvm_ec_add(dvm, addExpr(c1, c1))
+	if doubled != added {
+		t.Fatalf("ec_mul(c,2) != ec_add(c,c):\n  mul %s\n  add %s", doubled, added)
+	}
+
+	// scalar composition: ec_mul(ec_mul(c,k), j) == ec_mul(c, k*j)
+	_, m3 := dvm_ec_mul(dvm, mulExpr(c1, 3))
+	_, m23 := dvm_ec_mul(dvm, mulExpr(m3, 2))
+	_, m6 := dvm_ec_mul(dvm, mulExpr(c1, 6))
+	if m23 != m6 {
+		t.Fatalf("ec_mul composition wrong:\n  3*2 %s\n  6   %s", m23, m6)
+	}
+
+	// scalar 1 -> identity; scalar 0 -> valid point encoding
+	_, one := dvm_ec_mul(dvm, mulExpr(c1, 1))
+	if one != c1 {
+		t.Fatal("ec_mul(c,1) != c")
+	}
+	_, zero := dvm_ec_mul(dvm, mulExpr(c1, 0))
+	if len(zero) != 66 {
+		t.Fatalf("ec_mul(c,0) not a valid point encoding: %d chars", len(zero))
+	}
+
+	// output is always a valid 33-byte compressed point (66 hex chars)
+	if len(doubled) != 66 || len(m6) != 66 {
+		t.Fatal("ec_mul output not 33-byte compressed point")
+	}
+
+	// version gate
+	if fda, ok := func_table["ec_mul"]; ok {
+		for _, f := range fda {
+			if f.Range(semver.MustParse("1.2.3")) {
+				t.Fatal("ec_mul visible to dvm version 1.2.3 — version gate broken")
+			}
+		}
+	}
+
+	t.Log("ec_mul OK: homomorphic with ec_add, scalar composition, identity, version gate")
+}

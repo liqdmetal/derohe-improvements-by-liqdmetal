@@ -101,6 +101,7 @@ func init() {
 	func_table["verify_commit"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 45000, StorageCost: 0, PtrU: dvm_verify_commit}}   // P0-3: confidential settlement
 	func_table["asset_balance"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 2000, StorageCost: 0, PtrU: dvm_asset_balance}}   // I1: read SC's own stored balance for any asset (incl. DERO)
 	func_table["ec_add"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 15000, StorageCost: 0, PtrS: dvm_ec_add}}               // I2: homomorphic accumulation of commitments
+	func_table["ec_mul"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 30000, StorageCost: 0, PtrS: dvm_ec_mul}}               // I3: point scalar multiplication
 }
 
 // this will handle all internal functions which may be required/necessary to expand DVM functionality
@@ -845,4 +846,36 @@ func dvm_ec_add(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result 
 
 	sum := new(bn256.G1).Add(&p1, &p2)
 	return true, hex.EncodeToString(sum.EncodeCompressed())
+}
+
+// dvm_ec_mul multiplies a compressed bn256 G1 point by a scalar (uint64).
+// ec_mul(point_hex String, scalar Uint64) -> String (33-byte compressed point, hex)
+//
+// I3: point scalar multiplication for point derivation and key blinding —
+// the homomorphic counterpart to ec_add (I2). Combined, a contract can
+// build and accumulate commitments entirely in-VM.
+func dvm_ec_mul(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result string) {
+	checkargscount(2, len(expr.Args))
+
+	point_hex, ok := dvm.eval(expr.Args[0]).(string)
+	if !ok {
+		panic("ec_mul: point must be a hex string (33-byte compressed point)")
+	}
+	scalar, ok := dvm.eval(expr.Args[1]).(uint64)
+	if !ok {
+		panic("ec_mul: scalar must be Uint64")
+	}
+
+	point_bytes, err := hex.DecodeString(point_hex)
+	if err != nil || len(point_bytes) != 33 {
+		panic("ec_mul: point must be a hex string of 33 bytes")
+	}
+
+	var pt bn256.G1
+	if err := pt.DecodeCompressed(point_bytes); err != nil {
+		panic("ec_mul: not a valid compressed point")
+	}
+
+	mul := new(bn256.G1).ScalarMult(&pt, new(big.Int).SetUint64(scalar))
+	return true, hex.EncodeToString(mul.EncodeCompressed())
 }
