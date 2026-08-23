@@ -693,6 +693,29 @@ func dvm_verify_sig(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, res
 // trusting an external oracle — the dvm_functions.go:35-38 comment's trust
 // assumption becomes a language primitive. Deterministic across nodes:
 // HashToPoint(HashtoNumber(input)) has no randomness.
+
+// strictDecodeG1 decodes a 33-byte compressed bn256 G1 point with STRICT
+// encoding validation: x must be < p (the base-field modulus). Go's
+// DecodeCompressed accepts x >= p (xToY computes y from x mod p but the
+// raw x is stored), which is a chain-split class divergence — a strict
+// decoder (the clean-room Rust port) REJECTS such encodings. All point
+// intrinsics must accept and reject identically across implementations,
+// so every caller-supplied compressed point goes through this.
+func strictDecodeG1(b []byte) (*bn256.G1, error) {
+	if len(b) != 33 {
+		return nil, fmt.Errorf("point must be 33 bytes")
+	}
+	xi := new(big.Int).SetBytes(b[0:32])
+	if xi.Cmp(bn256.P) >= 0 {
+		return nil, fmt.Errorf("point x >= field modulus p (non-canonical encoding)")
+	}
+	pt := &bn256.G1{}
+	if err := pt.DecodeCompressed(b); err != nil {
+		return nil, err
+	}
+	return pt, nil
+}
+
 func dvm_hash_to_point(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result string) {
 	checkargscount(1, len(expr.Args))
 	input, ok := dvm.eval(expr.Args[0]).(string)
@@ -767,9 +790,9 @@ func dvm_verify_commit(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, 
 	if err != nil || len(commit_bytes) != 33 {
 		return true, uint64(0)
 	}
-	commit_pt := &bn256.G1{}
-	if err := commit_pt.DecodeCompressed(commit_bytes); err != nil {
-		return true, uint64(0)
+	commit_pt, err := strictDecodeG1(commit_bytes)
+	if err != nil {
+		return true, uint64(0) // non-canonical / off-curve encoding rejected (strict)
 	}
 
 	blind := new(big.Int).SetBytes(blind_bytes)
@@ -835,14 +858,15 @@ func dvm_ec_add(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result 
 		panic("ec_add: p2 must be a hex string of 33 bytes")
 	}
 
-	var p1, p2 bn256.G1
-	if err := p1.DecodeCompressed(p1_bytes); err != nil {
+	p1pt, err := strictDecodeG1(p1_bytes)
+	if err != nil {
 		panic("ec_add: p1 is not a valid compressed point")
 	}
-	if err := p2.DecodeCompressed(p2_bytes); err != nil {
+	p2pt, err := strictDecodeG1(p2_bytes)
+	if err != nil {
 		panic("ec_add: p2 is not a valid compressed point")
 	}
 
-	sum := new(bn256.G1).Add(&p1, &p2)
+	sum := new(bn256.G1).Add(p1pt, p2pt)
 	return true, hex.EncodeToString(sum.EncodeCompressed())
 }
