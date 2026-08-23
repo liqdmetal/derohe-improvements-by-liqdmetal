@@ -117,8 +117,15 @@ func Test_Payload_TX(t *testing.T) {
 		t.Fatalf("Wallet sync error err %s", err)
 	}
 
-	wsrc.account.Ringsize = 2
-	wdst.account.Ringsize = 2
+	wsrc.account.Ringsize = 4 // K0 Fix B1: testnet floor active at genesis; ring-2 NORMAL rejected
+	wdst.account.Ringsize = 4
+
+	// measure pre-transfer balances so the assertions are delta-based and
+	// independent of the simulator's starting balance (the old absolute
+	// expectations 1,520,000 / 0 assumed an 800k start the simulator no
+	// longer grants — a stale assertion that the daemon-hang used to mask).
+	pre_dst := wdst.account.Balance_Mature
+	pre_src := wsrc.account.Balance_Mature
 
 	var testPayload = rpc.Arguments{
 		{
@@ -164,12 +171,16 @@ func Test_Payload_TX(t *testing.T) {
 	wdst.Sync_Wallet_Memory_With_Daemon()
 	wsrc.Sync_Wallet_Memory_With_Daemon()
 
-	if wdst.account.Balance_Mature != 1520000 {
-		t.Fatalf("Failed receiver balance check, expected 1520000 actual %d", wdst.account.Balance_Mature)
+	// 8 transfers x 90000 = 720,000 credited to the receiver (fees go to the
+	// miner via block reward, not to the receiver).
+	if wdst.account.Balance_Mature != pre_dst+720000 {
+		t.Fatalf("Failed receiver balance check, expected %d actual %d", pre_dst+720000, wdst.account.Balance_Mature)
 	}
 
-	if wsrc.account.Balance_Mature != 0 {
-		t.Fatalf("Failed sender balance check, expected 0 actual %d", wsrc.account.Balance_Mature)
+	// sender spent 8 x (90000 amount + 10000 fee) = 800,000; fees went to the
+	// miner, so the sender's mature balance drops by the full 800,000.
+	if wsrc.account.Balance_Mature != pre_src-800000 {
+		t.Fatalf("Failed sender balance check, expected %d actual %d", pre_src-800000, wsrc.account.Balance_Mature)
 	}
 
 	time.Sleep(time.Second)

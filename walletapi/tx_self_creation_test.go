@@ -110,8 +110,8 @@ func Test_Creation_TX_morecheck(t *testing.T) {
 		t.Fatalf("wallet sync error err %s", err)
 	}
 
-	wsrc.account.Ringsize = 2
-	wdst.account.Ringsize = 2
+	wsrc.account.Ringsize = 4 // K0 Fix B1: testnet floor active at genesis; ring-2 NORMAL rejected
+	wdst.account.Ringsize = 4
 
 	var txs []transaction.Transaction
 	for i := 0; i < 7; i++ {

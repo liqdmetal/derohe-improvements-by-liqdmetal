@@ -231,8 +231,8 @@ func Test_Creation_TX(t *testing.T) {
 		}
 	}
 
-	wsrc.account.Ringsize = 2
-	wdst.account.Ringsize = 2
+	wsrc.account.Ringsize = 4 // K0 Fix B1: testnet floor active at genesis (K0_MIN_RING4_HEIGHT=0); ring-2 NORMAL/BURN is consensus-rejected
+	wdst.account.Ringsize = 4
 
 	// accounts are reversed
 	wdst.Sync_Wallet_Memory_With_Daemon()
