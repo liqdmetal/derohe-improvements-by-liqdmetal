@@ -41,6 +41,7 @@ const (
 	Invalid Vtype = 0x3 // default is  invalid
 	Uint64  Vtype = 0x4 // uint64 data type
 	String  Vtype = 0x5 // string
+	Bool    Vtype = 0x6 // boolean (L6): stored as uint64 0/1 internally
 )
 
 var replacer = strings.NewReplacer("< =", "<=", "> =", ">=", "= =", "==", "! =", "!=", "& &", "&&", "| |", "||", "< <", "<<", "> >", ">>", "< >", "!=")
@@ -168,6 +169,8 @@ func check_valid_type(name string) Vtype {
 		return Uint64
 	case "string":
 		return String
+	case "bool":
+		return Bool
 	}
 	return Invalid
 }
@@ -300,6 +303,11 @@ func runSmartContract_internal(SC *SmartContract, EntryPoint string, state *Shar
 	dvm.SC = SC
 	dvm.f = function_call
 	dvm.Locals = map[string]Variable{}
+	// L6: built-in boolean constants TRUE/FALSE
+	dvm.Constants = map[string]Variable{
+		"TRUE":  {Name: "TRUE", Type: Bool, ValueUint64: 1},
+		"FALSE": {Name: "FALSE", Type: Bool, ValueUint64: 0},
+	}
 
 	dvm.State = state // set state to execute current function
 
@@ -320,6 +328,10 @@ func runSmartContract_internal(SC *SmartContract, EntryPoint string, state *Shar
 			}
 		case String:
 			variable.ValueString = value.(string)
+		case Bool:
+			if variable.ValueUint64, err = strconv.ParseUint(value.(string), 0, 64); err != nil {
+				return
+			}
 
 		default:
 			panic("unknown parameter type cannot have parameters")
@@ -672,6 +684,16 @@ func (dvm *DVM_Interpreter) interpret_DIM(line []string) (newIP uint64, err erro
 	if data_type == Invalid {
 		return 0, fmt.Errorf("function name \"%s\", No such Data type \"%s\"", dvm.f.Name, line[len(line)-1])
 	}
+	// L6: Bool type is gated on DVM >= 10.0.0
+	if data_type == Bool {
+		if err := dvm.gateControlFlow("Bool"); err != nil {
+			return 0, err
+		}
+	}
+	// Bool as a function return type is also gated — check at parse of the
+	// Function signature (this is the DIM-time check; function signatures
+	// are validated by check_valid_type at parse, so a Bool return in an
+	// old-version contract is caught at the first Bool DIM/LET use).
 
 	for i := 0; i < len(line)-2; i++ {
 		if line[i] != "," { // ignore separators
@@ -728,6 +750,8 @@ func (dvm *DVM_Interpreter) interpret_DIM(line []string) (newIP uint64, err erro
 				dvm.Locals[line[i]] = Variable{Name: line[i], Type: Uint64, ValueUint64: uint64(0)}
 			case String:
 				dvm.Locals[line[i]] = Variable{Name: line[i], Type: String, ValueString: ""}
+			case Bool:
+				dvm.Locals[line[i]] = Variable{Name: line[i], Type: Bool, ValueUint64: uint64(0)}
 
 			default:
 				panic("Unhandled data_type")
@@ -793,6 +817,12 @@ func (dvm *DVM_Interpreter) interpret_LET(line []string) (newIP uint64, err erro
 				return 0, fmt.Errorf("array element is String, expression is %T", expr_result)
 			}
 			arr[idx].ValueString = val
+		case Bool:
+			val, ok := expr_result.(uint64)
+			if !ok {
+				return 0, fmt.Errorf("array element is Bool, expression is %T", expr_result)
+			}
+			arr[idx].ValueUint64 = val
 		default:
 			panic("Unhandled data_type")
 		}
@@ -829,6 +859,9 @@ func (dvm *DVM_Interpreter) interpret_LET(line []string) (newIP uint64, err erro
 		result.ValueUint64 = expr_result.(uint64)
 	case String:
 		result.ValueString = expr_result.(string)
+	case Bool:
+		// a Bool variable accepts any uint64 expression (0/1)
+		result.ValueUint64 = expr_result.(uint64)
 
 	default:
 		panic("Unhandled data_type")
@@ -1084,6 +1117,8 @@ func (dvm *DVM_Interpreter) eval(exp ast.Expr) interface{} {
 			return el.ValueUint64
 		case String:
 			return el.ValueString
+		case Bool:
+			return el.ValueUint64
 		default:
 			panic("unexpected data type")
 		}
@@ -1095,6 +1130,8 @@ func (dvm *DVM_Interpreter) eval(exp ast.Expr) interface{} {
 				return cv.ValueUint64
 			case String:
 				return cv.ValueString
+			case Bool:
+				return cv.ValueUint64
 			default:
 				panic("unexpected data type")
 			}
@@ -1110,6 +1147,8 @@ func (dvm *DVM_Interpreter) eval(exp ast.Expr) interface{} {
 			return dvm.Locals[exp.Name].ValueUint64
 		case String:
 			return dvm.Locals[exp.Name].ValueString
+		case Bool:
+			return dvm.Locals[exp.Name].ValueUint64
 		default:
 			panic("unexpected data type")
 		}
@@ -1141,6 +1180,8 @@ func (dvm *DVM_Interpreter) eval(exp ast.Expr) interface{} {
 				arguments[p.Name] = fmt.Sprintf("%d", dvm.eval(exp.Args[i]).(uint64))
 			case String:
 				arguments[p.Name] = dvm.eval(exp.Args[i]).(string)
+			case Bool:
+				arguments[p.Name] = fmt.Sprintf("%d", dvm.eval(exp.Args[i]).(uint64))
 			}
 		}
 
