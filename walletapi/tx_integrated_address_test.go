@@ -62,8 +62,9 @@ func Test_IntegratedAddress_BuildsTX(t *testing.T) {
 	config.Testnet.Genesis_Block_Hash = genesis_block.GetHash()
 	config.Mainnet.Genesis_Block_Hash = genesis_block.GetHash()
 
-	chain, rpcserver, _ := simulator_chain_start()
+	chain, rpcserver, params := simulator_chain_start()
 	defer simulator_chain_stop(chain, rpcserver)
+	rpcport := params["rpcport"].(string)
 
 	globals.Arguments["--daemon-address"] = rpcport
 	go Keep_Connectivity()
