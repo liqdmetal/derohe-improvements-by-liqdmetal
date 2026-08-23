@@ -336,8 +336,12 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 		// SC_INSTALL is checked separately from the code in SCDATA: an
 		// install at ringsize 2 whose contract never calls SIGNER() is also
 		// rejected (it exposes the deployer for no legitimate reason).
+		// CHAIN-SPLIT HARDENING (wargame): this rejection must ALSO be gated
+		// on the fork height — a B2 node rejecting a ring-2 no-SIGNER install
+		// pre-fork while a legacy node accepts it would make the two node
+		// types disagree on block validity -> split.
 		if tx.TransactionType == transaction.SC_TX && tx.Payloads[t].Statement.RingSize == 2 {
-			if action, ok := tx.SCDATA.Value(rpc.SCACTION, rpc.DataUint64).(uint64); ok && rpc.SC_ACTION(action) == rpc.SC_INSTALL {
+			if action, ok := tx.SCDATA.Value(rpc.SCACTION, rpc.DataUint64).(uint64); ok && rpc.SC_ACTION(action) == rpc.SC_INSTALL && uint64(chain.Get_Height()) >= uint64(globals.Config.MAJOR_HF3_HEIGHT) {
 				if err := k0SCInstallRing2Reject(tx); err != nil {
 					return err
 				}
