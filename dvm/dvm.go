@@ -473,6 +473,10 @@ type DVM_Interpreter struct {
 
 	store *TX_Storage // mechanism to access a data store, can discard changes
 
+	// Loops is the structured-control-flow frame stack (FOR/WHILE/block-IF).
+	// L1 feature, gated on DVM version >= 10.0.0 (control_flow.go).
+	Loops []LoopFrame
+
 }
 
 func (i *DVM_Interpreter) incrementIP(newip uint64) (line []string, err error) {
@@ -548,6 +552,20 @@ func (i *DVM_Interpreter) interpret_SmartContract() (err error) {
 			newIP, err = i.interpret_IF(line[1:])
 		case strings.EqualFold(line[0], "RETURN"):
 			newIP, err = i.interpret_RETURN(line[1:])
+
+		// L1 structured control flow (gated on DVM >= 10.0.0)
+		case strings.EqualFold(line[0], "FOR"):
+			newIP, err = i.interpret_FOR(line[1:])
+		case strings.EqualFold(line[0], "NEXT"):
+			newIP, err = i.interpret_NEXT(line[1:])
+		case strings.EqualFold(line[0], "WHILE"):
+			newIP, err = i.interpret_WHILE(line[1:])
+		case strings.EqualFold(line[0], "WEND"):
+			newIP, err = i.interpret_WEND(line[1:])
+		case strings.EqualFold(line[0], "ELSE"):
+			newIP, err = i.interpret_ELSE(line[1:])
+		case strings.EqualFold(line[0], "ENDIF"):
+			newIP, err = i.interpret_ENDIF(line[1:])
 
 		//ability to print something for debugging purpose
 		case strings.EqualFold(line[0], "PRINT"):
@@ -730,6 +748,41 @@ func (dvm *DVM_Interpreter) interpret_GOTO(line []string) (newIP uint64, err err
 // IF expr THEN GOTO x
 // IF expr THEN GOTO x ELSE GOTO y
 func (dvm *DVM_Interpreter) interpret_IF(line []string) (newIP uint64, err error) {
+
+	// block form: IF expr THEN  (no GOTO) — body until ELSE/ENDIF
+	// L1 feature, gated on DVM >= 10.0.0.
+	if len(line) >= 2 && strings.EqualFold(line[len(line)-1], "THEN") && !lineHasToken(line[:len(line)-1], "GOTO") {
+		if err = dvm.gateControlFlow("IF"); err != nil {
+			return
+		}
+		val, e := dvm.evalUint64(strings.Join(line[:len(line)-1], " "))
+		if e != nil {
+			return 0, fmt.Errorf("IF expr: %v", e)
+		}
+		if val != 0 {
+			// condition true — push frame, fall through into the then-block
+			dvm.Loops = append(dvm.Loops, LoopFrame{Kind: "IF", StartIP: dvm.IP})
+			return 0, nil
+		}
+		// condition false — find matching ELSE or ENDIF and skip past it
+		endif, e := dvm.findMatchingLine(dvm.IP, "IF", "ENDIF")
+		if e != nil {
+			return 0, e
+		}
+		// if there's an ELSE for this IF, skip to after it; else skip past ENDIF
+		idx, _ := dvm.f.LinesNumberIndex[dvm.IP]
+		for j := int(idx) + 1; j < len(dvm.f.LineNumbers); j++ {
+			ln := dvm.f.LineNumbers[j]
+			lnLine := dvm.f.Lines[ln]
+			if len(lnLine) > 0 && strings.EqualFold(lnLine[0], "ELSE") && ln < endif {
+				return dvm.nextLineAfter(ln), nil
+			}
+			if ln == endif {
+				break
+			}
+		}
+		return dvm.nextLineAfter(endif), nil
+	}
 
 	thenip := uint64(0)
 	elseip := uint64(0)
