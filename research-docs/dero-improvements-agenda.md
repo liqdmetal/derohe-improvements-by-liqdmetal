@@ -32,7 +32,7 @@ the user's go-ahead. ⚠️**
 
 | # | Improvement | Gap it fills | Priority |
 |---|---|---|---|
-| L1 | **Structured control flow**: `FOR`/`NEXT`, `WHILE`, block `IF/ELSE/ENDIF` | GOTO-only loops today; error-prone, every expression 800 gas | **P0** |
+| L1 | **Structured control flow**: `FOR`/`NEXT`, `WHILE`, block `IF/ELSE/ENDIF` | GOTO-only loops today; error-prone, every expression 800 gas | **P0 ✅ IMPLEMENTED** (PR #98+; gated `>=10.0.0`) |
 | L2 | **Subroutines / internal functions** (`GOSUB`/`RETURN` or named blocks) | No code reuse inside a contract; every entrypoint re-implements helpers | **P0** |
 | L3 | **Arrays / indexed maps first-class** | `mapstore` works but keys are caller scalars; no list semantics | P1 |
 | L4 | **Map enumeration** (`mapkeys(scid) -> list`) | No way to iterate stored keys — batch/paged contracts hand-roll key sets | **P1** |
