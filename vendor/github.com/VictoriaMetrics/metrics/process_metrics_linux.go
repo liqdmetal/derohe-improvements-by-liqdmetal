@@ -16,11 +16,6 @@ import (
 // See https://github.com/prometheus/procfs/blob/a4ac0826abceb44c40fc71daed2b301db498b93e/proc_stat.go#L40 .
 const userHZ = 100
 
-// Different environments may have different page size.
-//
-// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/6457
-var pageSizeBytes = uint64(os.Getpagesize())
-
 // See http://man7.org/linux/man-pages/man5/proc.5.html
 type procStat struct {
 	State       byte
@@ -79,18 +74,17 @@ func writeProcessMetrics(w io.Writer) {
 
 	utime := float64(p.Utime) / userHZ
 	stime := float64(p.Stime) / userHZ
-	WriteCounterFloat64(w, "process_cpu_seconds_system_total", stime)
-	WriteCounterFloat64(w, "process_cpu_seconds_total", utime+stime)
-	WriteCounterFloat64(w, "process_cpu_seconds_user_total", utime)
-	WriteCounterUint64(w, "process_major_pagefaults_total", uint64(p.Majflt))
-	WriteCounterUint64(w, "process_minor_pagefaults_total", uint64(p.Minflt))
-	WriteGaugeUint64(w, "process_num_threads", uint64(p.NumThreads))
-	WriteGaugeUint64(w, "process_resident_memory_bytes", uint64(p.Rss)*pageSizeBytes)
-	WriteGaugeUint64(w, "process_start_time_seconds", uint64(startTimeSeconds))
-	WriteGaugeUint64(w, "process_virtual_memory_bytes", uint64(p.Vsize))
+	fmt.Fprintf(w, "process_cpu_seconds_system_total %g\n", stime)
+	fmt.Fprintf(w, "process_cpu_seconds_total %g\n", utime+stime)
+	fmt.Fprintf(w, "process_cpu_seconds_user_total %g\n", utime)
+	fmt.Fprintf(w, "process_major_pagefaults_total %d\n", p.Majflt)
+	fmt.Fprintf(w, "process_minor_pagefaults_total %d\n", p.Minflt)
+	fmt.Fprintf(w, "process_num_threads %d\n", p.NumThreads)
+	fmt.Fprintf(w, "process_resident_memory_bytes %d\n", p.Rss*4096)
+	fmt.Fprintf(w, "process_start_time_seconds %d\n", startTimeSeconds)
+	fmt.Fprintf(w, "process_virtual_memory_bytes %d\n", p.Vsize)
 	writeProcessMemMetrics(w)
 	writeIOMetrics(w)
-	writePSIMetrics(w)
 }
 
 var procSelfIOErrLogged uint32
@@ -139,12 +133,12 @@ func writeIOMetrics(w io.Writer) {
 			writeBytes = getInt(s)
 		}
 	}
-	WriteGaugeUint64(w, "process_io_read_bytes_total", uint64(rchar))
-	WriteGaugeUint64(w, "process_io_written_bytes_total", uint64(wchar))
-	WriteGaugeUint64(w, "process_io_read_syscalls_total", uint64(syscr))
-	WriteGaugeUint64(w, "process_io_write_syscalls_total", uint64(syscw))
-	WriteGaugeUint64(w, "process_io_storage_read_bytes_total", uint64(readBytes))
-	WriteGaugeUint64(w, "process_io_storage_written_bytes_total", uint64(writeBytes))
+	fmt.Fprintf(w, "process_io_read_bytes_total %d\n", rchar)
+	fmt.Fprintf(w, "process_io_written_bytes_total %d\n", wchar)
+	fmt.Fprintf(w, "process_io_read_syscalls_total %d\n", syscr)
+	fmt.Fprintf(w, "process_io_write_syscalls_total %d\n", syscw)
+	fmt.Fprintf(w, "process_io_storage_read_bytes_total %d\n", readBytes)
+	fmt.Fprintf(w, "process_io_storage_written_bytes_total %d\n", writeBytes)
 }
 
 var startTimeSeconds = time.Now().Unix()
@@ -161,8 +155,8 @@ func writeFDMetrics(w io.Writer) {
 		log.Printf("ERROR: metrics: cannot determine the limit on open file descritors: %s", err)
 		return
 	}
-	WriteGaugeUint64(w, "process_max_fds", maxOpenFDs)
-	WriteGaugeUint64(w, "process_open_fds", totalOpenFDs)
+	fmt.Fprintf(w, "process_max_fds %d\n", maxOpenFDs)
+	fmt.Fprintf(w, "process_open_fds %d\n", totalOpenFDs)
 }
 
 func getOpenFDsCount(path string) (uint64, error) {
@@ -230,11 +224,11 @@ func writeProcessMemMetrics(w io.Writer) {
 		log.Printf("ERROR: metrics: cannot determine memory status: %s", err)
 		return
 	}
-	WriteGaugeUint64(w, "process_virtual_memory_peak_bytes", ms.vmPeak)
-	WriteGaugeUint64(w, "process_resident_memory_peak_bytes", ms.rssPeak)
-	WriteGaugeUint64(w, "process_resident_memory_anon_bytes", ms.rssAnon)
-	WriteGaugeUint64(w, "process_resident_memory_file_bytes", ms.rssFile)
-	WriteGaugeUint64(w, "process_resident_memory_shared_bytes", ms.rssShmem)
+	fmt.Fprintf(w, "process_virtual_memory_peak_bytes %d\n", ms.vmPeak)
+	fmt.Fprintf(w, "process_resident_memory_peak_bytes %d\n", ms.rssPeak)
+	fmt.Fprintf(w, "process_resident_memory_anon_bytes %d\n", ms.rssAnon)
+	fmt.Fprintf(w, "process_resident_memory_file_bytes %d\n", ms.rssFile)
+	fmt.Fprintf(w, "process_resident_memory_shared_bytes %d\n", ms.rssShmem)
 
 }
 
@@ -278,135 +272,4 @@ func getMemStats(path string) (*memStats, error) {
 		}
 	}
 	return &ms, nil
-}
-
-// writePSIMetrics writes PSI total metrics for the current process to w.
-//
-// See https://docs.kernel.org/accounting/psi.html
-func writePSIMetrics(w io.Writer) {
-	if psiMetricsStart == nil {
-		// Failed to initialize PSI metrics
-		return
-	}
-
-	m, err := getPSIMetrics()
-	if err != nil {
-		log.Printf("ERROR: metrics: cannot expose PSI metrics: %s", err)
-		return
-	}
-
-	WriteCounterFloat64(w, "process_pressure_cpu_waiting_seconds_total", psiTotalSecs(m.cpuSome-psiMetricsStart.cpuSome))
-	WriteCounterFloat64(w, "process_pressure_cpu_stalled_seconds_total", psiTotalSecs(m.cpuFull-psiMetricsStart.cpuFull))
-
-	WriteCounterFloat64(w, "process_pressure_io_waiting_seconds_total", psiTotalSecs(m.ioSome-psiMetricsStart.ioSome))
-	WriteCounterFloat64(w, "process_pressure_io_stalled_seconds_total", psiTotalSecs(m.ioFull-psiMetricsStart.ioFull))
-
-	WriteCounterFloat64(w, "process_pressure_memory_waiting_seconds_total", psiTotalSecs(m.memSome-psiMetricsStart.memSome))
-	WriteCounterFloat64(w, "process_pressure_memory_stalled_seconds_total", psiTotalSecs(m.memFull-psiMetricsStart.memFull))
-}
-
-func psiTotalSecs(microsecs uint64) float64 {
-	// PSI total stats is in microseconds according to https://docs.kernel.org/accounting/psi.html
-	// Convert it to seconds.
-	return float64(microsecs) / 1e6
-}
-
-// psiMetricsStart contains the initial PSI metric values on program start.
-// it is needed in order to make sure the exposed PSI metrics start from zero.
-var psiMetricsStart = func() *psiMetrics {
-	m, err := getPSIMetrics()
-	if err != nil {
-		log.Printf("ERROR: metrics: disable exposing PSI metrics because of failed init: %s", err)
-		return nil
-	}
-	return m
-}()
-
-type psiMetrics struct {
-	cpuSome uint64
-	cpuFull uint64
-	ioSome  uint64
-	ioFull  uint64
-	memSome uint64
-	memFull uint64
-}
-
-func getPSIMetrics() (*psiMetrics, error) {
-	cgroupPath := getCgroupV2Path()
-	if cgroupPath == "" {
-		// Do nothing, since PSI requires cgroup v2, and the process doesn't run under cgroup v2.
-		return nil, nil
-	}
-
-	cpuSome, cpuFull, err := readPSITotals(cgroupPath, "cpu.pressure")
-	if err != nil {
-		return nil, err
-	}
-
-	ioSome, ioFull, err := readPSITotals(cgroupPath, "io.pressure")
-	if err != nil {
-		return nil, err
-	}
-
-	memSome, memFull, err := readPSITotals(cgroupPath, "memory.pressure")
-	if err != nil {
-		return nil, err
-	}
-
-	m := &psiMetrics{
-		cpuSome: cpuSome,
-		cpuFull: cpuFull,
-		ioSome:  ioSome,
-		ioFull:  ioFull,
-		memSome: memSome,
-		memFull: memFull,
-	}
-	return m, nil
-}
-
-func readPSITotals(cgroupPath, statsName string) (uint64, uint64, error) {
-	filePath := cgroupPath + "/" + statsName
-	data, err := ioutil.ReadFile(filePath)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	lines := strings.Split(string(data), "\n")
-	some := uint64(0)
-	full := uint64(0)
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "some ") && !strings.HasPrefix(line, "full ") {
-			continue
-		}
-
-		tmp := strings.SplitN(line, "total=", 2)
-		if len(tmp) != 2 {
-			return 0, 0, fmt.Errorf("cannot find total from the line %q at %q", line, filePath)
-		}
-		microsecs, err := strconv.ParseUint(tmp[1], 10, 64)
-		if err != nil {
-			return 0, 0, fmt.Errorf("cannot parse total=%q at %q: %w", tmp[1], filePath, err)
-		}
-
-		switch {
-		case strings.HasPrefix(line, "some "):
-			some = microsecs
-		case strings.HasPrefix(line, "full "):
-			full = microsecs
-		}
-	}
-	return some, full, nil
-}
-
-func getCgroupV2Path() string {
-	data, err := ioutil.ReadFile("/proc/self/cgroup")
-	if err != nil {
-		return ""
-	}
-	tmp := strings.SplitN(string(data), "::", 2)
-	if len(tmp) != 2 {
-		return ""
-	}
-	return "/sys/fs/cgroup" + strings.TrimSpace(tmp[1])
 }

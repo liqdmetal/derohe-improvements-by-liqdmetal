@@ -21,7 +21,7 @@ import (
 
 // Response represents the server side of an HTTP response.
 type Response struct {
-	parser *Parser
+	Parser *Parser
 
 	request *http.Request // request for this response
 
@@ -46,11 +46,11 @@ type Response struct {
 
 // Hijack .
 func (res *Response) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	if res.parser.Processor == nil {
+	if res.Parser.Processor == nil {
 		return nil, nil, errors.New("nil Proccessor")
 	}
 	res.hijacked = true
-	return res.parser.Processor.Conn(), nil, nil
+	return res.Parser.Processor.Conn(), nil, nil
 }
 
 // Header .
@@ -93,7 +93,7 @@ func (res *Response) WriteString(s string) (int, error) {
 // Write .
 func (res *Response) Write(data []byte) (int, error) {
 	l := len(data)
-	conn := res.parser.Processor.Conn()
+	conn := res.Parser.Processor.Conn()
 	if l == 0 || conn == nil {
 		return 0, nil
 	}
@@ -111,27 +111,36 @@ func (res *Response) Write(data []byte) (int, error) {
 		lenStr := res.formatInt(l, 16)
 		size := hl + len(lenStr) + l + 4
 		if size < maxPacketSize {
-			buf = append(buf, lenStr...)
-			buf = append(buf, "\r\n"...)
-			buf = append(buf, data...)
-			buf = append(buf, "\r\n"...)
+			buf = mempool.AppendString(buf, lenStr)
+			buf = mempool.AppendString(buf, "\r\n")
+			buf = mempool.Append(buf, data...)
+			buf = mempool.AppendString(buf, "\r\n")
 			res.buffer = buf
 			return l, nil
 		}
+		buf = mempool.AppendString(buf, lenStr)
+		buf = mempool.AppendString(buf, "\r\n")
 		_, err := conn.Write(buf)
+		mempool.Free(buf)
 		if err != nil {
 			return 0, err
 		}
-		buf = mempool.Malloc(0)
-		buf = append(buf, lenStr...)
-		buf = append(buf, "\r\n"...)
-		buf = append(buf, data...)
-		buf = append(buf, "\r\n"...)
+		buf = mempool.Malloc(len(data) + 2)[0:0]
+		buf = mempool.Append(buf, data...)
+		buf = mempool.AppendString(buf, "\r\n")
 		if len(buf) < maxPacketSize {
 			res.buffer = buf
 			return l, nil
 		}
-		return conn.Write(buf)
+		nw, err := conn.Write(buf)
+		mempool.Free(buf)
+		if err == nil {
+			return l, nil
+		}
+		if nw >= 4 {
+			return nw - 4, err
+		}
+		return -1, err
 	}
 
 	if len(res.header[contentLengthHeader]) > 0 {
@@ -140,23 +149,25 @@ func (res *Response) Write(data []byte) (int, error) {
 		buf := res.buffer
 		res.buffer = nil
 		if buf == nil {
-			buf = mempool.Malloc(l)[0:0]
+			return conn.Write(buf)
 		}
-		buf = append(buf, data...)
-		return conn.Write(buf)
+		buf = mempool.Append(buf, data...)
+		nw, err := conn.Write(buf)
+		mempool.Free(buf)
+		return nw, err
 	}
 	if res.bodyBuffer == nil {
 		res.bodyBuffer = mempool.Malloc(l)[0:0]
 	}
 
-	res.bodyBuffer = append(res.bodyBuffer, data...)
+	res.bodyBuffer = mempool.Append(res.bodyBuffer, data...)
 	// res.header[contentLengthHeader] = []string{res.formatInt(l, 10)}
 	return l, nil
 }
 
 // ReadFrom .
 func (res *Response) ReadFrom(r io.Reader) (n int64, err error) {
-	c := res.parser.Processor.Conn()
+	c := res.Parser.Processor.Conn()
 	if c == nil {
 		return 0, nil
 	}
@@ -237,35 +248,37 @@ func (res *Response) eoncodeHead() {
 
 	data := mempool.Malloc(1024)[0:0]
 
-	data = append(data, res.request.Proto...)
-	data = append(data, ' ', '0'+byte(statusCode/100), '0'+byte(statusCode%100)/10, '0'+byte(statusCode%10), ' ')
-	data = append(data, status...)
-	data = append(data, '\r', '\n')
+	data = mempool.AppendString(data, res.request.Proto)
+	data = mempool.Append(data, ' ', '0'+byte(statusCode/100), '0'+byte(statusCode%100)/10, '0'+byte(statusCode%10), ' ')
+	data = mempool.AppendString(data, status)
+	data = mempool.Append(data, '\r', '\n')
 
 	if res.hasBody && len(res.header["Content-Type"]) == 0 {
 		const contentType = "Content-Type: text/plain; charset=utf-8\r\n"
-		data = append(data, contentType...)
+		data = mempool.AppendString(data, contentType)
 	}
-	if !res.chunked {
-		const contentLenthKey = "Content-Length: "
+
+	const contentLenthKey = "Content-Length"
+	if !res.chunked && len(res.header[contentLenthKey]) == 0 {
+		const contentLenthPrefix = "Content-Length: "
 		if !res.hasBody {
-			data = append(data, contentLenthKey...)
-			data = append(data, '0', '\r', '\n')
+			data = mempool.AppendString(data, contentLenthPrefix)
+			data = mempool.Append(data, '0', '\r', '\n')
 		} else {
-			data = append(data, contentLenthKey...)
+			data = mempool.AppendString(data, contentLenthPrefix)
 			l := len(res.bodyBuffer)
 			if l > 0 {
 				s := strconv.FormatInt(int64(l), 10)
-				data = append(data, s...)
-				data = append(data, '\r', '\n')
+				data = mempool.AppendString(data, s)
+				data = mempool.Append(data, '\r', '\n')
 			} else {
-				data = append(data, '0', '\r', '\n')
+				data = mempool.Append(data, '0', '\r', '\n')
 			}
 		}
 	}
 	if res.request.Close && len(res.header["Connection"]) == 0 {
 		const connection = "Connection: close\r\n"
-		data = append(data, connection...)
+		data = mempool.AppendString(data, connection)
 	}
 
 	if len(res.header["Date"]) == 0 {
@@ -276,7 +289,7 @@ func (res *Response) eoncodeHead() {
 		hh, mn, ss := t.Clock()
 		day := days[3*t.Weekday():]
 		mon := months[3*(mm-1):]
-		data = append(data,
+		data = mempool.Append(data,
 			'D', 'a', 't', 'e', ':', ' ',
 			day[0], day[1], day[2], ',', ' ',
 			byte('0'+dd/10), byte('0'+dd%10), ' ',
@@ -297,10 +310,10 @@ func (res *Response) eoncodeHead() {
 	for k, vv := range res.header {
 		if _, ok := res.trailer[k]; !ok {
 			for _, v := range vv {
-				data = append(data, k...)
-				data = append(data, ':', ' ')
-				data = append(data, v...)
-				data = append(data, '\r', '\n')
+				data = mempool.AppendString(data, k)
+				data = mempool.Append(data, ':', ' ')
+				data = mempool.AppendString(data, v)
+				data = mempool.Append(data, '\r', '\n')
 			}
 		} else if len(vv) > 0 {
 			v := res.header.Get(k)
@@ -309,7 +322,7 @@ func (res *Response) eoncodeHead() {
 		}
 	}
 
-	data = append(data, '\r', '\n')
+	data = mempool.Append(data, '\r', '\n')
 	res.buffer = data
 }
 
@@ -319,11 +332,12 @@ func (res *Response) flushTrailer(conn io.Writer) error {
 	if !res.chunked {
 		if res.buffer != nil {
 			if res.bodyBuffer != nil {
-				res.buffer = append(res.buffer, res.bodyBuffer...)
+				res.buffer = mempool.Append(res.buffer, res.bodyBuffer...)
 				mempool.Free(res.bodyBuffer)
 				res.bodyBuffer = nil
 			}
 			_, err = conn.Write(res.buffer)
+			mempool.Free(res.buffer)
 			res.buffer = nil
 			if err != nil {
 				return err
@@ -331,6 +345,7 @@ func (res *Response) flushTrailer(conn io.Writer) error {
 		}
 		if res.bodyBuffer != nil {
 			_, err = conn.Write(res.bodyBuffer)
+			mempool.Free(res.bodyBuffer)
 			res.bodyBuffer = nil
 		}
 
@@ -339,22 +354,26 @@ func (res *Response) flushTrailer(conn io.Writer) error {
 
 	data := res.buffer
 	res.buffer = nil
-	if data == nil {
-		data = mempool.Malloc(0)
-	}
 	if len(res.trailer) == 0 {
-		data = append(data, "0\r\n\r\n"...)
-	} else {
-		data = append(data, "0\r\n"...)
-		for k, v := range res.trailer {
-			data = append(data, k...)
-			data = append(data, ": "...)
-			data = append(data, v...)
-			data = append(data, "\r\n"...)
+		if data == nil {
+			data = mempool.Malloc(0)
 		}
-		data = append(data, "\r\n"...)
+		data = mempool.AppendString(data, "0\r\n\r\n")
+	} else {
+		if data == nil {
+			data = mempool.Malloc(512)[0:0]
+		}
+		data = mempool.AppendString(data, "0\r\n")
+		for k, v := range res.trailer {
+			data = mempool.AppendString(data, k)
+			data = mempool.AppendString(data, ": ")
+			data = mempool.AppendString(data, v)
+			data = mempool.AppendString(data, "\r\n")
+		}
+		data = mempool.AppendString(data, "\r\n")
 	}
 	_, err = conn.Write(data)
+	mempool.Free(data)
 	return err
 }
 
@@ -381,7 +400,7 @@ func (res *Response) formatInt(n int, base int) string {
 // NewResponse .
 func NewResponse(parser *Parser, request *http.Request, enableSendfile bool) *Response {
 	res := responsePool.Get().(*Response)
-	res.parser = parser
+	res.Parser = parser
 	res.request = request
 	res.header = http.Header{ /*"Server": []string{"nbio"}*/ }
 	res.enableSendfile = enableSendfile
