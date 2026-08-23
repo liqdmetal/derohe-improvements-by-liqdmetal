@@ -324,7 +324,26 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 		// exposes the signer by design (parity selects the sender position);
 		// the privacy floor is 4. SC_TX / coinbase / registration / premine
 		// exempt until the verify_sig migration (K0 Fix C).
-		if k0RingSizeFloorReject(tx.Height, tx.TransactionType, tx.Payloads[t].Statement.RingSize) {
+		//
+		// HARDENING (wargame): the floor must key off the CURRENT chain height
+		// at verification time, NOT tx.Height. tx.Height is attacker-settable
+		// (walletapi/transaction_build.go:37) and TX_VALIDITY_HEIGHT=11 lets a
+		// tx reference a block up to 11 back — so right after the floor
+		// activates, a ring-2 NORMAL tx pinned to a pre-fork block would dodge
+		// the gate. Keying off the chain tip closes that window.
+		//
+		// HARDENING 2 (wargame): an "SC_TX" with no SCACTION in SCDATA is not
+		// invoking any contract — process_transaction_sc returns immediately
+		// for empty/SCACTION-less SCDATA (transaction_execute.go:267,291), so
+		// it is a NORMAL transfer stamped SC_TX in the header (the type field
+		// is attacker-settable, transaction.go:316). That would dodge the SC_TX
+		// exemption for free. Treat any SC_TX that does not actually carry an
+		// SC action as NORMAL for the floor.
+		txtype := tx.TransactionType
+		if txtype == transaction.SC_TX && !tx.SCDATA.Has(rpc.SCACTION, rpc.DataUint64) {
+			txtype = transaction.NORMAL // SC_TX-without-an-action is a NORMAL tx in disguise
+		}
+		if k0RingSizeFloorReject(uint64(chain.Get_Height()), txtype, tx.Payloads[t].Statement.RingSize) {
 			return fmt.Errorf("K0: ringsize %d < 4 rejected for NORMAL/BURN txs from height %d (privacy floor; use ringsize >= 4)",
 				tx.Payloads[t].Statement.RingSize, globals.Config.K0_MIN_RING4_HEIGHT)
 		}
