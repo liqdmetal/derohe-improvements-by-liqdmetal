@@ -28,7 +28,7 @@ func TestWargame_K0FloorSC_TXTypeLieBypass(t *testing.T) {
 	tip := uint64(8_000_000)        // well past fork
 
 	// honest NORMAL ring-2 -> rejected (floor works)
-	if !k0RingSizeFloorReject(tip, transaction.NORMAL, 2) {
+	if !K0RingSizeFloorReject(tip, transaction.NORMAL, 2) {
 		t.Fatal("ring-2 NORMAL should be rejected post-fork")
 	}
 

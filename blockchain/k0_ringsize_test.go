@@ -30,7 +30,7 @@ func TestK0_RingSizeFloorReject(t *testing.T) {
 		{"ring2 registration post-fork (exempt)", 100, transaction.REGISTRATION, 2, false},
 	}
 	for _, c := range cases {
-		got := k0RingSizeFloorReject(c.height, c.txtype, c.ringsize)
+		got := K0RingSizeFloorReject(c.height, c.txtype, c.ringsize)
 		if got != c.want {
 			t.Errorf("%s: got %v want %v", c.name, got, c.want)
 		}
@@ -42,7 +42,7 @@ func TestK0_RingSizeFloorNotActive(t *testing.T) {
 	cfg := config.Testnet
 	cfg.K0_MIN_RING4_HEIGHT = 1<<62 + 1<<62 - 1 // ~MaxInt64
 	globals.Config = cfg
-	if k0RingSizeFloorReject(100, transaction.NORMAL, 2) {
+	if K0RingSizeFloorReject(100, transaction.NORMAL, 2) {
 		t.Fatal("floor disabled but reject fired")
 	}
 }
@@ -50,10 +50,10 @@ func TestK0_RingSizeFloorNotActive(t *testing.T) {
 func TestK0_RingSizeFloorPreFork(t *testing.T) {
 	// mainnet floor is 7,600,000; txs before it are unaffected
 	globals.Config = config.Mainnet
-	if k0RingSizeFloorReject(7_000_000, transaction.NORMAL, 2) {
+	if K0RingSizeFloorReject(7_000_000, transaction.NORMAL, 2) {
 		t.Fatal("pre-fork ringsize-2 NORMAL rejected (should be unaffected)")
 	}
-	if !k0RingSizeFloorReject(8_000_000, transaction.NORMAL, 2) {
+	if !K0RingSizeFloorReject(8_000_000, transaction.NORMAL, 2) {
 		t.Fatal("post-fork ringsize-2 NORMAL accepted (should reject)")
 	}
 }

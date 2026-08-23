@@ -40,7 +40,7 @@ func TestWargame_K0FloorRulePure(t *testing.T) {
 		{"post-fork ring2 coinbase exempt", 7_600_000, transaction.COINBASE, 2, false},
 	}
 	for _, c := range cases {
-		if got := k0RingSizeFloorReject(c.height, c.txtype, c.ringsize); got != c.want {
+		if got := K0RingSizeFloorReject(c.height, c.txtype, c.ringsize); got != c.want {
 			t.Errorf("%s: got %v want %v", c.name, got, c.want)
 		}
 	}
@@ -59,7 +59,7 @@ func TestWargame_K0FloorNoPreForkDodge(t *testing.T) {
 	attackerTxHeight := uint64(7_599_999)
 
 	// The verifier passes the TIP, not tx.Height -> rejected.
-	if !k0RingSizeFloorReject(tip, transaction.NORMAL, 2) {
+	if !K0RingSizeFloorReject(tip, transaction.NORMAL, 2) {
 		t.Fatal("HARDENING FAILED: chain tip past fork must reject ring-2 NORMAL")
 	}
 	_ = attackerTxHeight // the old bug used this; the fix ignores it

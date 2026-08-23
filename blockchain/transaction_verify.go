@@ -199,14 +199,16 @@ func (chain *Blockchain) Verify_Transaction_NonCoinbase_CheckNonce_Tips(hf_versi
 	return nil
 }
 
-// k0RingSizeFloorReject implements the K0 Fix B1 decision rule (spec §9 K0,
+// K0RingSizeFloorReject implements the K0 Fix B1 decision rule (spec §9 K0,
 // k0-fix-design.md): from config.K0_MIN_RING4_HEIGHT onward, NORMAL/BURN
 // txs with ringsize < 4 are rejected. Ringsize 2 exposes the signer by
 // design (Extract_signer / transaction_execute.go), so the privacy floor
 // is 4 — sender + receiver + 2 decoys. SC_TX / coinbase / registration /
 // premine are exempt (they have their own auth model; SC owner auth moves
 // to verify_sig — K0 Fix C).
-func k0RingSizeFloorReject(height uint64, txtype transaction.TransactionType, ringsize uint64) bool {
+//
+// Exported for the derohe-rs differential oracle (k0_floor op).
+func K0RingSizeFloorReject(height uint64, txtype transaction.TransactionType, ringsize uint64) bool {
 	floor := uint64(globals.Config.K0_MIN_RING4_HEIGHT)
 	if height < floor {
 		return false // pre-fork txs unaffected
@@ -364,7 +366,7 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 		if txtype == transaction.SC_TX && !tx.SCDATA.Has(rpc.SCACTION, rpc.DataUint64) {
 			txtype = transaction.NORMAL // SC_TX-without-an-action is a NORMAL tx in disguise
 		}
-		if k0RingSizeFloorReject(uint64(chain.Get_Height()), txtype, tx.Payloads[t].Statement.RingSize) {
+		if K0RingSizeFloorReject(uint64(chain.Get_Height()), txtype, tx.Payloads[t].Statement.RingSize) {
 			return fmt.Errorf("K0: ringsize %d < 4 rejected for NORMAL/BURN txs from height %d (privacy floor; use ringsize >= 4)",
 				tx.Payloads[t].Statement.RingSize, globals.Config.K0_MIN_RING4_HEIGHT)
 		}
