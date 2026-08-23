@@ -330,7 +330,13 @@ func (chain *Blockchain) process_transaction_sc(cache map[crypto.Hash]*graviton.
 
 		meta := dvm.SC_META_DATA{}
 		if _, ok := sc.Functions["InitializePrivate"]; ok {
-			meta.Type = 1
+			meta.Type = dvm.SC_META_TYPE_PRIVATE
+		}
+		// K0 Fix B2: if the contract never calls SIGNER(), mark it NoSigner so
+		// ringsize-2 SC_TX to it is rejected at consensus (auto-detection; no
+		// contract-author change needed).
+		if !dvm.ContractUsesSigner(sc) {
+			meta.SetNoSigner()
 		}
 
 		w_sc_data_tree = dvm.Wrapped_tree(cache, ss, scid)
@@ -340,7 +346,7 @@ func (chain *Blockchain) process_transaction_sc(cache map[crypto.Hash]*graviton.
 		w_sc_tree.Put(dvm.SC_Meta_Key(scid), meta.MarshalBinary())
 
 		entrypoint := "Initialize"
-		if meta.Type == 1 { // if its a a private SC
+		if meta.IsPrivate() { // if its a a private SC (masks the B2 NoSigner bit)
 			entrypoint = "InitializePrivate"
 		}
 

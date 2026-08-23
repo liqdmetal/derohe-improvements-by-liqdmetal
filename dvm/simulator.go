@@ -107,7 +107,11 @@ func (s *Simulator) SCInstall(sc_code string, incoming_values map[crypto.Hash]ui
 
 	var meta SC_META_DATA
 	if _, ok := sc.Functions["InitializePrivate"]; ok {
-		meta.Type = 1
+		meta.Type = SC_META_TYPE_PRIVATE
+	}
+	// K0 Fix B2 (mirror of the chain install path): auto-detect SIGNER() usage.
+	if !ContractUsesSigner(sc) {
+		meta.SetNoSigner()
 	}
 
 	w_sc_data_tree := Wrapped_tree(s.cache, s.ss, scid)
@@ -116,7 +120,7 @@ func (s *Simulator) SCInstall(sc_code string, incoming_values map[crypto.Hash]ui
 	w_sc_tree.Put(SC_Meta_Key(scid), meta.MarshalBinary())
 
 	entrypoint := "Initialize"
-	if meta.Type == 1 { // if its a a private SC
+	if meta.IsPrivate() { // if its a a private SC (masks the B2 NoSigner bit)
 		entrypoint = "InitializePrivate"
 	}
 
