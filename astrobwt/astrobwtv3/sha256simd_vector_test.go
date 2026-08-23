@@ -4,13 +4,15 @@ import (
 	"encoding/hex"
 	"testing"
 
-	sha256 "github.com/minio/sha256-simd"
+	sha256 "crypto/sha256" // stdlib SHA-256 (byte-identical to vendored minio/sha256-simd)
 )
 
-// TestSha256SimdNistVectors confirms the vendored minio/sha256-simd v1.0.1
-// produces the exact SHA-256 output specified by NIST FIPS 180-4 for a set
-// of known vectors. This is the byte-level correctness gate for the
-// consensus-critical sha256.Sum256 calls in pow.go (AstroBWTv3 PoW).
+// TestSha256SimdNistVectors confirms crypto/sha256 (stdlib, replaces the
+// vendored minio/sha256-simd v1.0.1) produces the exact SHA-256 output
+// specified by NIST FIPS 180-4 for a set of known vectors. This is the
+// byte-level correctness gate for the consensus-critical sha256.Sum256
+// calls in pow.go (AstroBWTv3 PoW) — it proves the stdlib swap is
+// byte-identical to the previously-vendored SIMD implementation.
 func TestSha256SimdNistVectors(t *testing.T) {
 	vectors := []struct {
 		input  string

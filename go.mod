@@ -25,7 +25,6 @@ require (
 	github.com/lesismal/llib v1.1.10
 	github.com/lesismal/nbio v1.3.11
 	github.com/miekg/dns v1.1.55
-	github.com/minio/sha256-simd v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/satori/go.uuid v1.2.0
 	github.com/segmentio/fasthash v1.0.3

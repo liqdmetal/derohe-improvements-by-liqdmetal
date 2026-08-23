@@ -6,7 +6,7 @@ import "sync"
 
 //import "fmt"
 import "encoding/binary"
-import "github.com/minio/sha256-simd"
+import "crypto/sha256" // stdlib SHA-256; byte-identical to minio/sha256-simd (astrobwtv3 PoW gate)
 
 const MAX_LENGTH uint32 = (256 * 384) - 1 // this is the maximum
 
