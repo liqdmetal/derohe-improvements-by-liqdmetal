@@ -72,7 +72,7 @@ func Test_Payload_TX(t *testing.T) {
 	config.Mainnet.Genesis_Block_Hash = genesis_block.GetHash()
 
 	chain, rpcserver, params := simulator_chain_start()
-	_ = params
+	rpcport := params["rpcport"].(string)
 
 	defer func() {
 		simulator_chain_stop(chain, rpcserver)
