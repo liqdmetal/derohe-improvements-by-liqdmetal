@@ -42,6 +42,7 @@ const (
 	Uint64  Vtype = 0x4 // uint64 data type
 	String  Vtype = 0x5 // string
 	Bool    Vtype = 0x6 // boolean (L6): stored as uint64 0/1 internally
+	Int     Vtype = 0x7 // signed 64-bit integer (L9): stored in ValueInt64
 )
 
 var replacer = strings.NewReplacer("< =", "<=", "> =", ">=", "= =", "==", "! =", "!=", "& &", "&&", "| |", "||", "< <", "<<", "> >", ">>", "< >", "!=")
@@ -57,6 +58,10 @@ type Variable struct {
 	Type        Vtype  `cbor:"T,omitempty" json:"T,omitempty"` // we have only 2 data types
 	ValueUint64 uint64 `cbor:"V,omitempty" json:"VI,omitempty"`
 	ValueString string `cbor:"V,omitempty" json:"VS,omitempty"`
+	// ValueInt64 holds signed integers (L9). Locals-only like Array —
+	// contracts cannot STORE an Int (STORE takes scalars via uint64 path),
+	// so this never touches serialized SC state.
+	ValueInt64 int64 `cbor:"I,omitempty" json:"I,omitempty"`
 	// Array holds RAM-array elements (L3). Locals-only: contracts cannot
 	// STORE an array (STORE takes scalars), so this never touches the
 	// serialized SC state — consensus-neutral. Pointer keeps Variable
@@ -171,6 +176,8 @@ func check_valid_type(name string) Vtype {
 		return String
 	case "bool":
 		return Bool
+	case "int":
+		return Int
 	}
 	return Invalid
 }
@@ -330,6 +337,10 @@ func runSmartContract_internal(SC *SmartContract, EntryPoint string, state *Shar
 			variable.ValueString = value.(string)
 		case Bool:
 			if variable.ValueUint64, err = strconv.ParseUint(value.(string), 0, 64); err != nil {
+				return
+			}
+		case Int:
+			if variable.ValueInt64, err = strconv.ParseInt(value.(string), 0, 64); err != nil {
 				return
 			}
 
@@ -690,6 +701,12 @@ func (dvm *DVM_Interpreter) interpret_DIM(line []string) (newIP uint64, err erro
 			return 0, err
 		}
 	}
+	// L9: Int type is gated on DVM >= 10.0.0
+	if data_type == Int {
+		if err := dvm.gateControlFlow("Int"); err != nil {
+			return 0, err
+		}
+	}
 	// Bool as a function return type is also gated — check at parse of the
 	// Function signature (this is the DIM-time check; function signatures
 	// are validated by check_valid_type at parse, so a Bool return in an
@@ -752,6 +769,8 @@ func (dvm *DVM_Interpreter) interpret_DIM(line []string) (newIP uint64, err erro
 				dvm.Locals[line[i]] = Variable{Name: line[i], Type: String, ValueString: ""}
 			case Bool:
 				dvm.Locals[line[i]] = Variable{Name: line[i], Type: Bool, ValueUint64: uint64(0)}
+			case Int:
+				dvm.Locals[line[i]] = Variable{Name: line[i], Type: Int, ValueInt64: int64(0)}
 
 			default:
 				panic("Unhandled data_type")
@@ -823,6 +842,14 @@ func (dvm *DVM_Interpreter) interpret_LET(line []string) (newIP uint64, err erro
 				return 0, fmt.Errorf("array element is Bool, expression is %T", expr_result)
 			}
 			arr[idx].ValueUint64 = val
+		case Int:
+			if iv, ok := expr_result.(int64); ok {
+				arr[idx].ValueInt64 = iv
+			} else if uv, ok := expr_result.(uint64); ok {
+				arr[idx].ValueInt64 = int64(uv)
+			} else {
+				return 0, fmt.Errorf("array element is Int, expression is %T", expr_result)
+			}
 		default:
 			panic("Unhandled data_type")
 		}
@@ -862,6 +889,16 @@ func (dvm *DVM_Interpreter) interpret_LET(line []string) (newIP uint64, err erro
 	case Bool:
 		// a Bool variable accepts any uint64 expression (0/1)
 		result.ValueUint64 = expr_result.(uint64)
+	case Int:
+		// an Int variable accepts any int64 expression; uint64 values
+		// reinterpret two's-complement
+		if iv, ok := expr_result.(int64); ok {
+			result.ValueInt64 = iv
+		} else if uv, ok := expr_result.(uint64); ok {
+			result.ValueInt64 = int64(uv)
+		} else {
+			panic(fmt.Sprintf("Int variable cannot hold %T", expr_result))
+		}
 
 	default:
 		panic("Unhandled data_type")
@@ -1038,6 +1075,14 @@ func (dvm *DVM_Interpreter) interpret_RETURN(line []string) (newIP uint64, err e
 		dvm.ReturnValue.ValueUint64 = expr_result.(uint64)
 	case String:
 		dvm.ReturnValue.ValueString = expr_result.(string)
+	case Bool:
+		dvm.ReturnValue.ValueUint64 = expr_result.(uint64)
+	case Int:
+		if iv, ok := expr_result.(int64); ok {
+			dvm.ReturnValue.ValueInt64 = iv
+		} else {
+			dvm.ReturnValue.ValueInt64 = int64(expr_result.(uint64))
+		}
 
 	default:
 		panic("unexpected data type")
@@ -1077,6 +1122,16 @@ func (dvm *DVM_Interpreter) eval(exp ast.Expr) interface{} {
 		switch exp.Op {
 		case token.XOR:
 			return ^(dvm.eval(exp.X).(uint64))
+		case token.SUB: // L9: unary minus — negative literals (-5)
+			x := dvm.eval(exp.X)
+			switch v := x.(type) {
+			case uint64:
+				return int64(-int64(v))
+			case int64:
+				return -v
+			default:
+				panic(fmt.Sprintf("unary minus on unsupported type %T", x))
+			}
 		case token.NOT:
 			x := dvm.eval(exp.X)
 			switch x := x.(type) {
@@ -1119,6 +1174,8 @@ func (dvm *DVM_Interpreter) eval(exp ast.Expr) interface{} {
 			return el.ValueString
 		case Bool:
 			return el.ValueUint64
+		case Int:
+			return el.ValueInt64
 		default:
 			panic("unexpected data type")
 		}
@@ -1132,6 +1189,8 @@ func (dvm *DVM_Interpreter) eval(exp ast.Expr) interface{} {
 				return cv.ValueString
 			case Bool:
 				return cv.ValueUint64
+			case Int:
+				return cv.ValueInt64
 			default:
 				panic("unexpected data type")
 			}
@@ -1149,6 +1208,8 @@ func (dvm *DVM_Interpreter) eval(exp ast.Expr) interface{} {
 			return dvm.Locals[exp.Name].ValueString
 		case Bool:
 			return dvm.Locals[exp.Name].ValueUint64
+		case Int:
+			return dvm.Locals[exp.Name].ValueInt64
 		default:
 			panic("unexpected data type")
 		}
@@ -1182,6 +1243,8 @@ func (dvm *DVM_Interpreter) eval(exp ast.Expr) interface{} {
 				arguments[p.Name] = dvm.eval(exp.Args[i]).(string)
 			case Bool:
 				arguments[p.Name] = fmt.Sprintf("%d", dvm.eval(exp.Args[i]).(uint64))
+			case Int:
+				arguments[p.Name] = fmt.Sprintf("%d", dvm.eval(exp.Args[i]).(int64))
 			}
 		}
 
@@ -1261,6 +1324,19 @@ func (dvm *DVM_Interpreter) evalBinaryExpr(exp *ast.BinaryExpr) interface{} {
 		return left.(string) + fmt.Sprintf("%d", right)
 	}
 
+	// L9: allow int64-vs-uint64 mixed operations — reinterpret the uint64
+	// side as int64 (two's complement) so signed arithmetic and comparisons
+	// work against plain literals (e.g. IntVar == 70).
+	if _, lok := left.(int64); lok {
+		if _, rok := right.(uint64); rok {
+			right = int64(right.(uint64))
+		}
+	} else if _, rok := right.(int64); rok {
+		if _, lok := left.(uint64); lok {
+			left = int64(left.(uint64))
+		}
+	}
+
 	if fmt.Sprintf("%T", left) != fmt.Sprintf("%T", right) {
 		panic(fmt.Sprintf("Expressions cannot be different type(String/Uint64) left (val %+v %+v)   right (%+v %+v)", left, exp.X, right, exp.Y))
 	}
@@ -1306,6 +1382,71 @@ func (dvm *DVM_Interpreter) evalBinaryExpr(exp *ast.BinaryExpr) interface{} {
 		default:
 			panic(fmt.Sprintf("String data type only support addition operation ('%s') not supported", exp.Op))
 		}
+	}
+
+	// L9: signed arithmetic — if either operand is int64, do the whole
+	// operation in int64 (negative literals, signed deltas).
+	if l64, lok := left.(int64); lok {
+		r64, rok := right.(int64)
+		if !rok {
+			// int64 op uint64: reinterpret the uint64 as int64
+			r64 = int64(right.(uint64))
+		}
+		switch exp.Op {
+		case token.ADD:
+			return l64 + r64
+		case token.SUB:
+			return l64 - r64
+		case token.MUL:
+			return l64 * r64
+		case token.QUO:
+			if r64 == 0 {
+				panic("division by zero")
+			}
+			return l64 / r64
+		case token.REM:
+			if r64 == 0 {
+				panic("division by zero")
+			}
+			return l64 % r64
+		case token.EQL:
+			if l64 == r64 {
+				return uint64(1)
+			}
+			return uint64(0)
+		case token.NEQ:
+			if l64 != r64 {
+				return uint64(1)
+			}
+			return uint64(0)
+		case token.LEQ:
+			if l64 <= r64 {
+				return uint64(1)
+			}
+			return uint64(0)
+		case token.GEQ:
+			if l64 >= r64 {
+				return uint64(1)
+			}
+			return uint64(0)
+		case token.LSS:
+			if l64 < r64 {
+				return uint64(1)
+			}
+			return uint64(0)
+		case token.GTR:
+			if l64 > r64 {
+				return uint64(1)
+			}
+			return uint64(0)
+		default:
+			panic(fmt.Sprintf("signed op %s not supported", exp.Op))
+		}
+	}
+	if _, ok := right.(int64); ok {
+		// uint64 op int64: convert left to int64 and recurse via the same
+		// path (left is uint64; convert and run the int64 block)
+		return dvm.evalBinaryExpr(&ast.BinaryExpr{X: &ast.BasicLit{Kind: token.INT, Value: fmt.Sprintf("%d", int64(left.(uint64)))}, Op: exp.Op, Y: exp.Y})
 	}
 
 	left_uint64 := left.(uint64)
