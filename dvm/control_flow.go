@@ -27,6 +27,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -305,4 +306,51 @@ func dvm_arrlen(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result 
 		panic(fmt.Sprintf("arrlen: variable \"%s\" is not an array", name))
 	}
 	return true, uint64(len(*v.Array))
+}
+
+// dvm_mapkeys enumerates the SC's state keys visible during this execution
+// (L4). mapkeys() -> String — comma-separated keys, sorted.
+//
+// The effective key set is the union of:
+//   - RamStore: keys loaded from disk (via DiskLoader) during this call
+//   - RawKeys:  keys written during this call (TX_Storage.RawKeys)
+//
+// This is what batch/paged contracts need: iterate the keys they have
+// touched (stored or loaded) without hand-rolling key sets. Keys are the
+// String/Uint64 values of the stored Variables, unmarshaled from the
+// marshaled DataKeys. Gated >= 10.0.0.
+func dvm_mapkeys(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result string) {
+	checkargscount(0, len(expr.Args))
+
+	seen := map[string]bool{}
+
+	// RamStore keys (loaded during execution)
+	for key := range dvm.State.RamStore {
+		if key.Type == String {
+			seen[key.ValueString] = true
+		} else if key.Type == Uint64 {
+			seen[fmt.Sprintf("%d", key.ValueUint64)] = true
+		}
+	}
+
+	// RawKeys (written during execution): keys are marshaled Variables
+	store := dvm.State.Store
+	for kbytes := range store.RawKeys {
+		var key Variable
+		if err := key.UnmarshalBinary([]byte(kbytes)); err != nil {
+			continue
+		}
+		if key.Type == String {
+			seen[key.ValueString] = true
+		} else if key.Type == Uint64 {
+			seen[fmt.Sprintf("%d", key.ValueUint64)] = true
+		}
+	}
+
+	keys := make([]string, 0, len(seen))
+	for k := range seen {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return true, strings.Join(keys, ",")
 }
