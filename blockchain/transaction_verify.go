@@ -26,6 +26,7 @@ import (
 	"github.com/deroproject/derohe/config"
 	"github.com/deroproject/derohe/cryptography/bn256"
 	"github.com/deroproject/derohe/cryptography/crypto"
+	"github.com/deroproject/derohe/dvm"
 	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/rpc"
 	"github.com/deroproject/derohe/transaction"
@@ -216,6 +217,25 @@ func k0RingSizeFloorReject(height uint64, txtype transaction.TransactionType, ri
 	return ringsize < 4
 }
 
+// k0SCInstallRing2Reject implements the K0 Fix B2 rule for SC_INSTALL at
+// ringsize 2: if the contract being installed never calls SIGNER(), the
+// install itself has no legitimate reason to expose the signer at ringsize
+// 2 — reject it. A contract that genuinely uses SIGNER() (owner-gated
+// entrypoints) still installs at ringsize 2 until the verify_sig migration
+// (K0 Fix C) removes that need.
+func k0SCInstallRing2Reject(tx *transaction.Transaction) error {
+	if code, ok := tx.SCDATA.Value(rpc.SCCODE, rpc.DataString).(string); ok && code != "" {
+		sc, _, err := dvm.ParseSmartContract(code)
+		if err != nil {
+			return fmt.Errorf("K0 B2: could not parse SC code for SIGNER() scan: %v", err)
+		}
+		if !dvm.ContractUsesSigner(sc) {
+			return fmt.Errorf("K0 B2: ringsize-2 SC_INSTALL rejected — contract never calls SIGNER() (privacy floor; use ringsize >= 4)")
+		}
+	}
+	return nil
+}
+
 func (chain *Blockchain) Verify_Transaction_NonCoinbase(tx *transaction.Transaction) (err error) {
 	return chain.verify_Transaction_NonCoinbase_internal(false, tx)
 }
@@ -349,6 +369,21 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 				tx.Payloads[t].Statement.RingSize, globals.Config.K0_MIN_RING4_HEIGHT)
 		}
 
+		// K0 Fix B2 (spec k0-fix-design.md): a ringsize-2 SC_TX is only
+		// legitimate if the contract genuinely calls SIGNER() (owner-gated
+		// entrypoints). If it does not, ringsize 2 exposes the signer for no
+		// reason. SC_INSTALL is checked here from the code in SCDATA (no
+		// snapshot needed); SC_CALL is checked after the snapshot loads by
+		// reading the stored NoSigner meta bit for the called SCID.
+		if txtype == transaction.SC_TX && tx.Payloads[t].Statement.RingSize == 2 && tx.SCDATA.Has(rpc.SCACTION, rpc.DataUint64) {
+			action := rpc.SC_ACTION(tx.SCDATA.Value(rpc.SCACTION, rpc.DataUint64).(uint64))
+			if action == rpc.SC_INSTALL {
+				if err := k0SCInstallRing2Reject(tx); err != nil {
+					return err
+				}
+			}
+		}
+
 		if tx.Payloads[t].Statement.RingSize > 128 { // ring size current limited to 128
 			return fmt.Errorf("RingSize for %d statement cannot be more than 128.Actual %d", t, tx.Payloads[t].Statement.RingSize)
 		}
@@ -406,6 +441,33 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 
 	var zerohash crypto.Hash
 	trees[zerohash] = balance_tree // initialize main tree by default
+
+	// K0 Fix B2: a ringsize-2 SC_CALL to a contract that does not call
+	// SIGNER() is rejected — the contract was auto-marked NoSigner at
+	// install (transaction_execute.go), and ringsize 2 exposes the signer
+	// with no legitimate need. Read the contract's stored meta bit from the
+	// SC_META tree at the same snapshot the tx references.
+	if tx.TransactionType == transaction.SC_TX && tx.SCDATA.Has(rpc.SCACTION, rpc.DataUint64) {
+		action := rpc.SC_ACTION(tx.SCDATA.Value(rpc.SCACTION, rpc.DataUint64).(uint64))
+		if action == rpc.SC_CALL && tx.SCDATA.Has(rpc.SCID, rpc.DataHash) {
+			scid := tx.SCDATA.Value(rpc.SCID, rpc.DataHash).(crypto.Hash)
+			sc_meta_tree, err := ss.GetTree(config.SC_META)
+			if err != nil {
+				return fmt.Errorf("K0 B2: cannot load SC_META tree: %v", err)
+			}
+			if meta_raw, err := sc_meta_tree.Get(dvm.SC_Meta_Key(scid)); err == nil {
+				var meta dvm.SC_META_DATA
+				if meta.UnmarshalBinary(meta_raw) == nil && meta.NoSigner() {
+					// find the ringsize for the SCID payload (if any)
+					for t := range tx.Payloads {
+						if tx.Payloads[t].Statement.RingSize == 2 {
+							return fmt.Errorf("K0 B2: ringsize-2 SC_CALL to NoSigner contract %s rejected (contract never calls SIGNER(); use ringsize >= 4)", scid)
+						}
+					}
+				}
+			}
+		}
+	}
 
 	for t := range tx.Payloads {
 		tx.Payloads[t].Statement.Publickeylist_compressed = tx.Payloads[t].Statement.Publickeylist_compressed[:0]
