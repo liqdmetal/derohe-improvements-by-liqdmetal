@@ -206,6 +206,25 @@ func (chain *Blockchain) Expand_Transaction_NonCoinbase(tx *transaction.Transact
 	return chain.verify_Transaction_NonCoinbase_internal(true, tx)
 }
 
+// k0SCInstallRing2Reject implements the K0 Fix B2 rule for SC_INSTALL at
+// ringsize 2: if the contract being installed never calls SIGNER(), the
+// install itself has no legitimate reason to expose the signer at ringsize
+// 2 — reject it. A contract that genuinely uses SIGNER() (owner-gated
+// entrypoints) still installs at ringsize 2 until the verify_sig migration
+// (K0 Fix C) removes that need.
+func k0SCInstallRing2Reject(tx *transaction.Transaction) error {
+	if code, ok := tx.SCDATA.Value(rpc.SCCODE, rpc.DataString).(string); ok && code != "" {
+		sc, _, err := dvm.ParseSmartContract(code)
+		if err != nil {
+			return fmt.Errorf("K0 B2: could not parse SC code for SIGNER() scan: %v", err)
+		}
+		if !dvm.ContractUsesSigner(sc) {
+			return fmt.Errorf("K0 Fix B2: ringsize-2 SC_INSTALL rejected — contract never calls SIGNER() (privacy floor; use ringsize >= 4)")
+		}
+	}
+	return nil
+}
+
 // all non miner tx must be non-coinbase tx
 // each check is placed in a separate  block of code, to avoid ambigous code or faulty checks
 // all check are placed and not within individual functions ( so as we cannot skip a check )
@@ -313,14 +332,25 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 		// call is rejected — the caller should use ringsize >= 4. Contracts
 		// that genuinely call SIGNER() keep ringsize 2 (their owner-gated
 		// entrypoints require it until the verify_sig migration, Fix C).
-		if tx.TransactionType == transaction.SC_TX && tx.Payloads[t].Statement.RingSize == 2 && !tx.Payloads[t].SCID.IsZero() {
-			if version, verr := chain.ReadBlockSnapshotVersion(tx.BLID); verr == nil {
-				if ss_b2, serr := chain.Store.Balance_store.LoadSnapshot(version); serr == nil {
-					if sc_meta_tree, terr := ss_b2.GetTree(config.SC_META); terr == nil {
-						if meta_bytes, merr := sc_meta_tree.Get(dvm.SC_Meta_Key(tx.Payloads[t].SCID)); merr == nil && len(meta_bytes) >= 1 {
-							var meta dvm.SC_META_DATA
-							if meta.UnmarshalBinary(meta_bytes) == nil && meta.NoSigner() {
-								return fmt.Errorf("K0 Fix B2: ringsize-2 SC_TX rejected — contract %s declares no SIGNER() usage; use ringsize >= 4", tx.Payloads[t].SCID)
+		//
+		// SC_INSTALL is checked separately from the code in SCDATA: an
+		// install at ringsize 2 whose contract never calls SIGNER() is also
+		// rejected (it exposes the deployer for no legitimate reason).
+		if tx.TransactionType == transaction.SC_TX && tx.Payloads[t].Statement.RingSize == 2 {
+			if action, ok := tx.SCDATA.Value(rpc.SCACTION, rpc.DataUint64).(uint64); ok && rpc.SC_ACTION(action) == rpc.SC_INSTALL {
+				if err := k0SCInstallRing2Reject(tx); err != nil {
+					return err
+				}
+			}
+			if !tx.Payloads[t].SCID.IsZero() {
+				if version, verr := chain.ReadBlockSnapshotVersion(tx.BLID); verr == nil {
+					if ss_b2, serr := chain.Store.Balance_store.LoadSnapshot(version); serr == nil {
+						if sc_meta_tree, terr := ss_b2.GetTree(config.SC_META); terr == nil {
+							if meta_bytes, merr := sc_meta_tree.Get(dvm.SC_Meta_Key(tx.Payloads[t].SCID)); merr == nil && len(meta_bytes) >= 1 {
+								var meta dvm.SC_META_DATA
+								if meta.UnmarshalBinary(meta_bytes) == nil && meta.NoSigner() {
+									return fmt.Errorf("K0 Fix B2: ringsize-2 SC_TX rejected — contract %s declares no SIGNER() usage; use ringsize >= 4", tx.Payloads[t].SCID)
+								}
 							}
 						}
 					}

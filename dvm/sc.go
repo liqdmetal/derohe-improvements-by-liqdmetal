@@ -44,7 +44,14 @@ type SC_META_DATA struct {
 // declares it does NOT call SIGNER(), so ringsize-2 SC_TX calls are
 // rejected (the ringsize-2 ring exposes the signer by design). Unset =
 // uses_signer (preserving behavior for existing contracts).
-const SC_META_NOSIGNER_BIT byte = 0x80
+const (
+	SC_META_NOSIGNER_BIT byte = 0x80 // high bit: contract never calls SIGNER() (B2)
+	SC_META_TYPE_PRIVATE byte = 0x01 // low bit: private (InitializePrivate)
+)
+
+// IsPrivate reports whether the contract is a private SC, masking out the
+// B2 NoSigner bit so the two flags coexist in one Type byte.
+func (meta *SC_META_DATA) IsPrivate() bool { return meta.Type&SC_META_TYPE_PRIVATE != 0 }
 
 // NoSigner reports whether the contract declares it does not use SIGNER().
 func (meta *SC_META_DATA) NoSigner() bool {
