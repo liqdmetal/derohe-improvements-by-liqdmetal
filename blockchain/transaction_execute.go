@@ -335,7 +335,16 @@ func (chain *Blockchain) process_transaction_sc(cache map[crypto.Hash]*graviton.
 		// K0 Fix B2: if the contract never calls SIGNER(), mark it NoSigner so
 		// ringsize-2 SC_TX to it is rejected at consensus (auto-detection; no
 		// contract-author change needed).
-		if !dvm.ContractUsesSigner(sc) {
+		//
+		// CHAIN-SPLIT HARDENING (wargame): this bit MUST only be set from the
+		// hard-fork height onward. It changes the SC_META tree bytes, which
+		// are committed into the chain state root (blockchain.go sc_change_cache
+		// -> tree hash). If a B2 node sets it before the fork while a legacy
+		// node doesn't, the same block produces DIFFERENT state roots on the
+		// two node types -> instant chain split. Gated on the same HF window
+		// as the B1 floor (K0_MIN_RING4_HEIGHT); pre-fork installs write
+		// byte-identical meta to today.
+		if bl_height >= uint64(globals.Config.K0_MIN_RING4_HEIGHT) && !dvm.ContractUsesSigner(sc) {
 			meta.SetNoSigner()
 		}
 

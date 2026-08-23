@@ -377,7 +377,12 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 		// reading the stored NoSigner meta bit for the called SCID.
 		if txtype == transaction.SC_TX && tx.Payloads[t].Statement.RingSize == 2 && tx.SCDATA.Has(rpc.SCACTION, rpc.DataUint64) {
 			action := rpc.SC_ACTION(tx.SCDATA.Value(rpc.SCACTION, rpc.DataUint64).(uint64))
-			if action == rpc.SC_INSTALL {
+			// CHAIN-SPLIT HARDENING (wargame): this rejection must ALSO be
+			// gated on the fork height — a B2 node rejecting a ring-2
+			// no-SIGNER install pre-fork while a legacy node accepts it
+			// would make the two node types disagree on block validity ->
+			// split. Post-fork all nodes run the same rule, so it is safe.
+			if action == rpc.SC_INSTALL && uint64(chain.Get_Height()) >= uint64(globals.Config.K0_MIN_RING4_HEIGHT) {
 				if err := k0SCInstallRing2Reject(tx); err != nil {
 					return err
 				}
