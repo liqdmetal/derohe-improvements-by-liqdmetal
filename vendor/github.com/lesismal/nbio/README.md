@@ -13,17 +13,14 @@
 [6]: LICENSE
 [7]: https://img.shields.io/badge/go-%3E%3D1.16-30dff3?style=flat-square&logo=go
 [8]: https://github.com/lesismal/nbio
-[9]: https://img.shields.io/github/workflow/status/lesismal/nbio/build-linux?style=flat-square&logo=github-actions
-[10]: https://github.com/lesismal/nbio/actions?query=workflow%3build-linux
+[9]: https://img.shields.io/github/actions/workflow/status/lesismal/nbio/autobahn.yml?branch=master&style=flat-square&logo=github-actions
+[10]: https://github.com/lesismal/nbio/actions?query=workflow%3autobahn
 [11]: https://goreportcard.com/badge/github.com/lesismal/nbio
 [12]: https://goreportcard.com/report/github.com/lesismal/nbio
 [13]: https://codecov.io/gh/lesismal/nbio/branch/master/graph/badge.svg
 [14]: https://codecov.io/gh/lesismal/nbio
 [15]: https://godoc.org/github.com/lesismal/nbio?status.svg
 [16]: https://godoc.org/github.com/lesismal/nbio
-
-
-
 
 
 ## Contents
@@ -33,268 +30,90 @@
   - [Features](#features)
   - [Installation](#installation)
   - [Quick Start](#quick-start)
-  - [API Examples](#api-examples)
-    - [New Gopher For Server-Side](#new-gopher-for-server-side)
-    - [New Gopher For Client-Side](#new-gopher-for-client-side)
-    - [Start Gopher](#start-gopher)
-    - [Custom Other Config For Gopher](#custom-other-config-for-gopher)
-    - [SetDeadline/SetReadDeadline/SetWriteDeadline](#setdeadlinesetreaddeadlinesetwritedeadline)
-    - [Bind User Session With Conn](#bind-user-session-with-conn)
-    - [Writev / Batch Write](#writev--batch-write)
-    - [Handle New Connection](#handle-new-connection)
-    - [Handle Disconnected](#handle-disconnected)
-    - [Handle Data](#handle-data)
-    - [Handle Memory Allocation/Free For Reading](#handle-memory-allocationfree-for-reading)
-    - [Handle Memory Free For Writing](#handle-memory-free-for-writing)
-    - [Handle Conn Before Read](#handle-conn-before-read)
-    - [Handle Conn After Read](#handle-conn-after-read)
-    - [Handle Conn Before Write](#handle-conn-before-write)
-  - [Echo Examples](#echo-examples)
+  - [TCP Echo Examples](#tcp-echo-examples)
+  - [UDP Echo Examples](#udp-echo-examples)
+  - [Bind User Session With Conn](#bind-user-session-with-conn)
+  - [SetDeadline/SetReadDeadline/SetWriteDeadline](#setdeadlinesetreaddeadlinesetwritedeadline)
   - [TLS Examples](#tls-examples)
   - [HTTP Examples](#http-examples)
   - [HTTPS Examples](#https-examples)
   - [Websocket Examples](#websocket-examples)
   - [Websocket TLS Examples](#websocket-tls-examples)
-  - [Websocket 1M Connections Examples](#websocket-1m-connections-examples)
   - [Use With Other STD Based Frameworkds](#use-with-other-std-based-frameworkds)
+  - [Magics For HTTP and Websocket](#magics-for-http-and-websocket)
+    - [Different IOMod](#different-iomod)
+    - [Using Websocket With Std Server](#using-websocket-with-std-server)
   - [More Examples](#more-examples)
-  
 
 ## Features
-- [x] linux: epoll, both ET/LT(default) supported
-- [x] macos(bsd): kqueue
-- [x] windows: golang std net
-- [x] nbio.Conn implements a non-blocking net.Conn(except windows)
-- [x] writev supported
-- [x] concurrent write/close supported(both nbio.Conn and nbio/nbhttp/websocket.Conn)
+### Cross Platform
+- [x] Linux: Epoll, both ET/LT(as default) supported
+- [x] BSD(MacOS): Kqueue
+- [x] Windows: Based on std net, for debugging only
+
+### Protocols Supported
+- [x] TCP/UDP/Unix Socket supported
 - [x] TLS supported
-- [x] HTTP/HTTPS 1.x
-- [x] Websocket, [Passes the Autobahn Test Suite](https://lesismal.github.io/nbio/websocket), `OnOpen/OnMessage/OnClose` order guaranteed
-- [ ] HTTP 2.0(no plans, 2.0 is not good enough)
+- [x] HTTP/HTTPS 1.x supported
+- [x] Websocket supported, [Passes the Autobahn Test Suite](https://lesismal.github.io/nbio/websocket/autobahn), `OnOpen/OnMessage/OnClose` order guaranteed
 
-
-## Installation
-
-1. Get and install nbio
-
-```sh
-$ go get -u github.com/lesismal/nbio
-```
-
-2. Import in your code:
-
-```go
-import "github.com/lesismal/nbio"
-```
+### Interfaces
+- [x] Implements a non-blocking net.Conn(except windows)
+- [x] SetDeadline/SetReadDeadline/SetWriteDeadline supported
+- [x] Concurrent Write/Close supported(both nbio.Conn and nbio/nbhttp/websocket.Conn)
 
 
 ## Quick Start
- 
-- start a server
 
-```go
-import "github.com/lesismal/nbio"
-
-g := nbio.NewGopher(nbio.Config{
-    Network: "tcp",
-    Addrs:   []string{"localhost:8888"},
-})
-
-// echo
-g.OnData(func(c *nbio.Conn, data []byte) {
-    c.Write(append([]byte{}, data...))
-})
-
-err := g.Start()
-if err != nil {
-    panic(err)
-}
-// ...
-```
-
-- start a client
-
-```go
-import "github.com/lesismal/nbio"
-
-g := nbio.NewGopher(nbio.Config{})
-
-g.OnData(func(c *nbio.Conn, data []byte) {
-    // ...
-})
-
-err := g.Start()
-if err != nil {
-    fmt.Printf("Start failed: %v\n", err)
-}
-defer g.Stop()
-
-c, err := nbio.Dial("tcp", addr)
-if err != nil {
-    fmt.Printf("Dial failed: %v\n", err)
-}
-g.AddConn(c)
-
-buf := make([]byte, 1024)
-c.Write(buf)
-// ...
-```
-
-## API Examples
-
-### New Gopher For Server-Side
 ```golang
-g := nbio.NewGopher(nbio.Config{
-    Network: "tcp",
-    Addrs:   []string{"localhost:8888"},
-})
-``` 
+package main
 
-### New Gopher For Client-Side
-```golang
-g := nbio.NewGopher(nbio.Config{})
-``` 
+import (
+	"log"
 
-### Start Gopher
-```golang
-err := g.Start()
-if err != nil {
-    fmt.Printf("Start failed: %v\n", err)
-}
-defer g.Stop()
-```
+	"github.com/lesismal/nbio"
+)
 
-### Custom Other Config For Gopher
-```golang
-conf := nbio.Config struct {
-    // Name describes your gopher name for logging, it's set to "NB" by default
-    Name: "NB",
+func main() {
+	engine := nbio.NewEngine(nbio.Config{
+		Network:            "tcp",//"udp", "unix"
+		Addrs:              []string{":8888"},
+		MaxWriteBufferSize: 6 * 1024 * 1024,
+	})
 
-    // MaxLoad represents the max online num, it's set to 10k by default
-    MaxLoad: 1024 * 10, 
+	// hanlde new connection
+	engine.OnOpen(func(c *nbio.Conn) {
+		log.Println("OnOpen:", c.RemoteAddr().String())
+	})
+	// hanlde connection closed
+	engine.OnClose(func(c *nbio.Conn, err error) {
+		log.Println("OnClose:", c.RemoteAddr().String(), err)
+	})
+	// handle data
+	engine.OnData(func(c *nbio.Conn, data []byte) {
+		c.Write(append([]byte{}, data...))
+	})
 
-    // NPoller represents poller goroutine num, it's set to runtime.NumCPU() by default
-    NPoller: runtime.NumCPU(),
+	err := engine.Start()
+	if err != nil {
+		log.Fatalf("nbio.Start failed: %v\n", err)
+		return
+	}
+	defer engine.Stop()
 
-    // ReadBufferSize represents buffer size for reading, it's set to 16k by default
-    ReadBufferSize: 1024 * 16,
-
-    // MaxWriteBufferSize represents max write buffer size for Conn, it's set to 1m by default.
-    // if the connection's Send-Q is full and the data cached by nbio is 
-    // more than MaxWriteBufferSize, the connection would be closed by nbio.
-    MaxWriteBufferSize uint32
-
-    // LockListener represents listener's goroutine to lock thread or not, it's set to false by default.
-	LockListener bool
-
-    // LockPoller represents poller's goroutine to lock thread or not.
-    LockPoller bool
+	<-make(chan int)
 }
 ```
 
-### SetDeadline/SetReadDeadline/SetWriteDeadline
-```golang
-var c *nbio.Conn = ...
-c.SetDeadline(time.Now().Add(time.Second * 10))
-c.SetReadDeadline(time.Now().Add(time.Second * 10))
-c.SetWriteDeadline(time.Now().Add(time.Second * 10))
-```
-
-### Bind User Session With Conn
-```golang
-var c *nbio.Conn = ...
-var session *YourSessionType = ... 
-c.SetSession(session)
-```
-
-```golang
-var c *nbio.Conn = ...
-session := c.Session().(*YourSessionType)
-```
-
-### Writev / Batch Write
-```golang
-var c *nbio.Conn = ...
-var data [][]byte = ...
-c.Writev(data)
-```
-
-### Handle New Connection
-```golang
-g.OnOpen(func(c *Conn) {
-    // ...
-    c.SetReadDeadline(time.Now().Add(time.Second*30))
-})
-```
-
-### Handle Disconnected
-```golang
-g.OnClose(func(c *Conn) {
-    // clear sessions from user layer
-})
-```
-
-### Handle Data
-```golang
-g.OnData(func(c *Conn, data []byte) {
-    // decode data
-    // ...
-})
-```
-
-### Handle Memory Allocation/Free For Reading
-```golang
-import "sync"
-
-var memPool = sync.Pool{
-    New: func() interface{} {
-        return make([]byte, yourSize)
-    },
-}
-
-g.OnReadBufferAlloc(func(c *Conn) []byte {
-    return memPool.Get().([]byte)
-})
-g.OnReadBufferFree(func(c *Conn, b []byte) {
-    memPool.Put(b)
-})
-```
-
-### Handle Memory Free For Writing
-```golang
-g.OnWriteBufferFree(func(c *Conn, b []byte) {
-    // ...
-})
-```
-
-### Handle Conn Before Read
-```golang
-// BeforeRead registers callback before syscall.Read
-// the handler would be called only on windows
-g.OnData(func(c *Conn, data []byte) {
-    c.SetReadDeadline(time.Now().Add(time.Second*30))
-})
-```
-### Handle Conn After Read
-```golang
-// AfterRead registers callback after syscall.Read
-// the handler would be called only on *nix
-g.BeforeRead(func(c *Conn) {
-    c.SetReadDeadline(time.Now().Add(time.Second*30))
-})
-```
-
-### Handle Conn Before Write
-```golang
-g.OnData(func(c *Conn, data []byte) {
-    c.SetWriteDeadline(time.Now().Add(time.Second*5))
-})
-```
-
-## Echo Examples
+## TCP Echo Examples
 
 - [echo-server](https://github.com/lesismal/nbio_examples/blob/master/echo/server/server.go)
 - [echo-client](https://github.com/lesismal/nbio_examples/blob/master/echo/client/client.go)
+
+## UDP Echo Examples
+
+- [udp-server](https://github.com/lesismal/nbio-examples/blob/master/udp/server/server.go)
+- [udp-client](https://github.com/lesismal/nbio-examples/blob/master/udp/client/client.go)
 
 ## TLS Examples
 
@@ -321,15 +140,60 @@ g.OnData(func(c *Conn, data []byte) {
 - [websocket-tls-server](https://github.com/lesismal/nbio_examples/blob/master/websocket_tls/server/server.go)
 - [websocket-tls-client](https://github.com/lesismal/nbio_examples/blob/master/websocket_tls/client/client.go)
 
-## Websocket 1M Connections Examples
-
-- [websocket-1m-connections-server](https://github.com/lesismal/nbio_examples/tree/master/websocket_1m/server/server.go)
-- [websocket-1m-connections-client](https://github.com/lesismal/nbio_examples/tree/master/websocket_1m/client/client.go)
-
 ## Use With Other STD Based Frameworkds
 
-- [gin-http-and-websocket-server](https://github.com/lesismal/nbio_examples/blob/master/http_with_other_frameworks/gin_server/gin_server.go)
 - [echo-http-and-websocket-server](https://github.com/lesismal/nbio_examples/blob/master/http_with_other_frameworks/echo_server/echo_server.go)
+- [gin-http-and-websocket-server](https://github.com/lesismal/nbio_examples/blob/master/http_with_other_frameworks/gin_server/gin_server.go)
+- [go-chi-http-and-websocket-server](https://github.com/lesismal/nbio_examples/blob/master/http_with_other_frameworks/go-chi_server/go-chi_server.go)
+
+## Magics For HTTP and Websocket
+
+### Different IOMod
+
+| IOMod  | Remarks |
+| ------------- |:-------------:|
+| IOModNonBlocking     | There's no difference between this IOMod and the old version with no IOMod. All the connections will be handled by poller.     |
+| IOModBlocking      |  All the connections will be handled by at least one goroutine, for websocket, we can set Upgrader.BlockingModAsyncWrite=true to handle writting with a separated goroutine and then avoid Head-of-line blocking on broadcasting scenarios.    |
+| IOModMixed      | We set the Engine.MaxBlockingOnline, if the online num is smaller than it, the new connection will be handled by single goroutine as IOModBlocking, else the new connection will be handled by poller.     |
+
+The `IOModBlocking` aims to improve the performance for low online service, it runs faster than std. 
+The `IOModMixed` aims to keep a balance between performance and cpu/mem cost in different scenarios: when there are not too many online connections, it performs better than std, or else it can serve lots of online connections and keep healthy.
+
+### Using Websocket With Std Server
+
+```golang
+package main
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+
+	"github.com/lesismal/nbio/nbhttp/websocket"
+)
+
+func echo(w http.ResponseWriter, r *http.Request) {
+	u := websocket.NewUpgrader()
+	u.OnMessage(func(c *websocket.Conn, mt websocket.MessageType, data []byte) {
+		c.WriteMessage(mt, data)
+	})
+	_, err := u.Upgrade(w, r, nil)
+	if err != nil {
+		log.Print("upgrade:", err)
+		return
+	}
+}
+
+func main() {
+	mux := &http.ServeMux{}
+	mux.HandleFunc("/ws", echo)
+	server := http.Server{
+		Addr:    "localhost:8080",
+		Handler: mux,
+	}
+	fmt.Println("server exit:", server.ListenAndServe())
+}
+```
 
 ## More Examples
 

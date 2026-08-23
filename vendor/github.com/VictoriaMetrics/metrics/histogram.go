@@ -36,7 +36,7 @@ var bucketMultiplier = math.Pow(10, 1.0/bucketsPerDecimal)
 //
 // Histogram buckets can be converted to Prometheus-like buckets with `le` labels
 // with `prometheus_buckets(<metric_name>_bucket)` function from PromQL extensions in VictoriaMetrics.
-// (see https://docs.victoriametrics.com/victoriametrics/metricsql/ ):
+// (see https://github.com/VictoriaMetrics/VictoriaMetrics/wiki/MetricsQL ):
 //
 //	prometheus_buckets(request_duration_bucket)
 //
@@ -46,22 +46,14 @@ var bucketMultiplier = math.Pow(10, 1.0/bucketsPerDecimal)
 //
 // Zero histogram is usable.
 type Histogram struct {
-	// Mu guarantees synchronous update for all the counters and sum.
-	//
-	// Do not use sync.RWMutex, since it has zero sense from performance PoV.
-	// It only complicates the code.
+	// Mu gurantees synchronous update for all the counters and sum.
 	mu sync.Mutex
 
-	// decimalBuckets contains counters for histogram buckets
 	decimalBuckets [decimalBucketsCount]*[bucketsPerDecimal]uint64
 
-	// lower is the number of values, which hit the lower bucket
 	lower uint64
-
-	// upper is the number of values, which hit the upper bucket
 	upper uint64
 
-	// sum is the sum of all the values put into Histogram
 	sum float64
 }
 
@@ -115,34 +107,6 @@ func (h *Histogram) Update(v float64) {
 		db[offset]++
 	}
 	h.mu.Unlock()
-}
-
-// Merge merges src to h
-func (h *Histogram) Merge(src *Histogram) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	src.mu.Lock()
-	defer src.mu.Unlock()
-
-	h.lower += src.lower
-	h.upper += src.upper
-	h.sum += src.sum
-
-	for i, dbSrc := range src.decimalBuckets {
-		if dbSrc == nil {
-			continue
-		}
-		dbDst := h.decimalBuckets[i]
-		if dbDst == nil {
-			var b [bucketsPerDecimal]uint64
-			dbDst = &b
-			h.decimalBuckets[i] = dbDst
-		}
-		for j := range dbSrc {
-			dbDst[j] += dbSrc[j]
-		}
-	}
 }
 
 // VisitNonZeroBuckets calls f for all buckets with non-zero counters.
@@ -263,8 +227,4 @@ func (h *Histogram) getSum() float64 {
 	sum := h.sum
 	h.mu.Unlock()
 	return sum
-}
-
-func (h *Histogram) metricType() string {
-	return "histogram"
 }
