@@ -45,26 +45,28 @@ func TestWargameEcMulAcceptsOffCurvePoint(t *testing.T) {
 	expr := &ast.CallExpr{Fun: &ast.Ident{Name: "ec_mul"},
 		Args: []ast.Expr{mkHex(xGtP), mkUint(2)}}
 
-	handled, res := dvm_ec_mul(dvm, expr)
+	// FIXED: the intrinsic now uses strictDecodeG1 (x < p validation), so
+	// the off-curve encoding is REJECTED with a panic (recovered by the
+	// Execute_sc_function wrapper -> deterministic tx failure), matching the
+	// strict decoder. No more deterministic-garbage computation.
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("ec_mul accepted an x>=p point after strict-decode fix — gap still open")
+			}
+			t.Logf("WARGAME FIXED: ec_mul now rejects the off-curve (x>p) encoding via strictDecodeG1")
+		}()
+		dvm_ec_mul(dvm, expr)
+	}()
 
-	// THE FINDING: the intrinsic does not reject the off-curve point. It
-	// computes a deterministic result on an invalid point. A strict decoder
-	// (Rust clean-room) would reject -> divergence.
-	if !handled {
-		t.Fatal("ec_mul not handled")
+	// Sanity: a canonical point still works (strict decode does not break
+	// valid inputs).
+	canonical := "000000000000000000000000000000000000000000000000000000000000000100" // x=1, y-even flag
+	if _, res := dvm_ec_mul(dvm, &ast.CallExpr{Fun: &ast.Ident{Name: "ec_mul"},
+		Args: []ast.Expr{mkHex(canonical), mkUint(2)}}); res == "" {
+		t.Fatal("strict decode broke canonical point input")
 	}
-	if res == "" {
-		t.Fatal("ec_mul returned empty result for off-curve input")
-	}
-	t.Logf("WARGAME: ec_mul ACCEPTED an off-curve point (x>p) and computed %s", res)
-
-	// Fix direction: after DecodeCompressed, the intrinsic must verify the
-	// point satisfies the curve equation (or use a strict decode that
-	// rejects x>=p) so a malformed point is rejected identically by every
-	// implementation. bn256's own Add/Mul entry points (bn256.go:162,303)
-	// check IsOnCurve on the way in for the ORACLE-API paths — the DVM
-	// intrinsics bypass that discipline by decoding raw.
-	t.Logf("note: bn256's Add/Mul entry points reject off-curve points; the intrinsic decodes raw and bypasses that check")
+	t.Logf("canonical point still accepted — strict validation only rejects non-canonical encodings")
 }
 
 func mustHex(t *testing.T, s string) []byte {
