@@ -101,6 +101,7 @@ func init() {
 	func_table["verify_commit"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 45000, StorageCost: 0, PtrU: dvm_verify_commit}}   // P0-3: confidential settlement
 	func_table["asset_balance"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 2000, StorageCost: 0, PtrU: dvm_asset_balance}}   // I1: read SC's own stored balance for any asset (incl. DERO)
 	func_table["ec_add"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 15000, StorageCost: 0, PtrS: dvm_ec_add}}               // I2: homomorphic accumulation of commitments
+	func_table["verify_adaptor"] = []func_data{func_data{Range: semver.MustParseRange(">=10.0.0"), ComputeCost: 250000, StorageCost: 0, PtrU: dvm_verify_adaptor}} // I4: adaptor-signature verification for cross-chain atomic
 }
 
 // this will handle all internal functions which may be required/necessary to expand DVM functionality
@@ -845,4 +846,80 @@ func dvm_ec_add(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result 
 
 	sum := new(bn256.G1).Add(&p1, &p2)
 	return true, hex.EncodeToString(sum.EncodeCompressed())
+}
+
+// dvm_verify_adaptor verifies a Schnorr adaptor signature on bn256 (I4):
+// the cross-chain atomic primitive. verify_adaptor(pubkey_hex, message_hex,
+// adaptor_sig_hex) -> Uint64 (0/1).
+//
+// A Schnorr adaptor signature proves "the holder of x (for P = x*G) can
+// produce a valid signature on m once a tweak t is revealed" — without
+// revealing t. This is the atomic-swap primitive (PTLC-style): two chains
+// can share a pre-signed adaptor, and whichever party reveals the tweak
+// completes BOTH transactions atomically.
+//
+// Construction (bn256, order n):
+//   e = ReducedHash(R' || P || m)          (scalar, mod n)
+//   valid iff  s'*G == R' + e*P
+// where adaptor_sig = (s', R'): s' = r + e*x + t, R' = (r+t)*G.
+//
+// Serialization:
+//   pubkey_hex     33-byte compressed G1 (P)
+//   message_hex    raw message bytes (m)
+//   adaptor_sig_hex 97 bytes = 64-byte big-endian s' + 33-byte compressed R'
+//
+// Pure verification: no witness material, no key recovery, no tweak
+// disclosure. Gated >= 10.0.0.
+func dvm_verify_adaptor(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result uint64) {
+	checkargscount(3, len(expr.Args))
+
+	pub_hex, ok := dvm.eval(expr.Args[0]).(string)
+	if !ok {
+		panic("verify_adaptor: pubkey must be a hex string (33-byte compressed point)")
+	}
+	msg_hex, ok := dvm.eval(expr.Args[1]).(string)
+	if !ok {
+		panic("verify_adaptor: message must be a hex string")
+	}
+	sig_hex, ok := dvm.eval(expr.Args[2]).(string)
+	if !ok {
+		panic("verify_adaptor: adaptor sig must be a hex string (97 bytes)")
+	}
+
+	pub_bytes, err := hex.DecodeString(pub_hex)
+	if err != nil || len(pub_bytes) != 33 {
+		return true, uint64(0)
+	}
+	msg_bytes, err := hex.DecodeString(msg_hex)
+	if err != nil {
+		return true, uint64(0)
+	}
+	sig_bytes, err := hex.DecodeString(sig_hex)
+	if err != nil || len(sig_bytes) != 97 {
+		return true, uint64(0)
+	}
+
+	P := &bn256.G1{}
+	if err := P.DecodeCompressed(pub_bytes); err != nil {
+		return true, uint64(0)
+	}
+	R := &bn256.G1{}
+	if err := R.DecodeCompressed(sig_bytes[64:97]); err != nil {
+		return true, uint64(0)
+	}
+	s := new(big.Int).SetBytes(sig_bytes[:64])
+
+	// e = ReducedHash(R' || P || m)  (scalar mod n)
+	hash_input := append([]byte{}, R.EncodeCompressed()...)
+	hash_input = append(hash_input, P.EncodeCompressed()...)
+	hash_input = append(hash_input, msg_bytes...)
+	e := crypto.ReducedHash(hash_input)
+
+	// s'*G == R' + e*P ?
+	lhs := new(bn256.G1).ScalarMult(crypto.G, s)
+	rhs := new(bn256.G1).Add(R, new(bn256.G1).ScalarMult(P, e))
+	if lhs.String() == rhs.String() {
+		return true, uint64(1)
+	}
+	return true, uint64(0)
 }
