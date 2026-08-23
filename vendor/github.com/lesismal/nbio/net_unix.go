@@ -13,6 +13,15 @@ import (
 	"syscall"
 )
 
+func init() {
+	var limit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err == nil {
+		if n := int(limit.Max); n > 0 && n < MaxOpenFiles {
+			MaxOpenFiles = n
+		}
+	}
+}
+
 func dupStdConn(conn net.Conn) (*Conn, error) {
 	sc, ok := conn.(interface {
 		SyscallConn() (syscall.RawConn, error)
@@ -38,6 +47,9 @@ func dupStdConn(conn net.Conn) (*Conn, error) {
 		return nil, err
 	}
 
+	lAddr := conn.LocalAddr()
+	rAddr := conn.RemoteAddr()
+
 	conn.Close()
 
 	// err = syscall.SetNonblock(newFd, true)
@@ -46,9 +58,43 @@ func dupStdConn(conn net.Conn) (*Conn, error) {
 	// 	return nil, err
 	// }
 
-	return &Conn{
+	c := &Conn{
 		fd:    newFd,
-		lAddr: conn.LocalAddr(),
-		rAddr: conn.RemoteAddr(),
-	}, nil
+		lAddr: lAddr,
+		rAddr: rAddr,
+	}
+
+	switch conn.(type) {
+	case *net.TCPConn:
+		c.typ = ConnTypeTCP
+	case *net.UnixConn:
+		c.typ = ConnTypeUnix
+	case *net.UDPConn:
+		lAddrUDP := lAddr.(*net.UDPAddr)
+		newLAddr := net.UDPAddr{
+			IP:   make([]byte, len(lAddrUDP.IP)),
+			Port: lAddrUDP.Port,
+			Zone: lAddrUDP.Zone,
+		}
+
+		copy(newLAddr.IP, lAddrUDP.IP)
+
+		c.lAddr = &newLAddr
+		// c.lAddr = lAddrUDP
+		if rAddr == nil {
+			c.typ = ConnTypeUDPServer
+			c.connUDP = &udpConn{
+				parent: c,
+				conns:  map[string]*Conn{},
+			}
+		} else {
+			c.typ = ConnTypeUDPClientFromDial
+			c.connUDP = &udpConn{
+				parent: c,
+			}
+		}
+	default:
+	}
+
+	return c, nil
 }

@@ -73,11 +73,8 @@ http.HandleFunc("/metrics", func(w http.ResponseWriter, req *http.Request) {
 metrics.InitPush("http://victoria-metrics:8428/api/v1/import/prometheus", 10*time.Second, `instance="foobar"`, true)
 ```
 
-By default, exposed metrics [do not have](https://github.com/VictoriaMetrics/metrics/issues/48#issuecomment-1620765811)
-`TYPE` or `HELP` meta information. Call [`ExposeMetadata(true)`](https://pkg.go.dev/github.com/VictoriaMetrics/metrics#ExposeMetadata)
-in order to generate `TYPE` and `HELP` meta information per each metric.
+See [docs](http://godoc.org/github.com/VictoriaMetrics/metrics) for more info.
 
-See [docs](https://pkg.go.dev/github.com/VictoriaMetrics/metrics) for more info.
 
 ### Users
 
@@ -108,9 +105,7 @@ instead of `CounterVec.With`. See [this example](https://pkg.go.dev/github.com/V
 
 #### Why [Histogram](http://godoc.org/github.com/VictoriaMetrics/metrics#Histogram) buckets contain `vmrange` labels instead of `le` labels like in Prometheus histograms?
 
-Buckets with `vmrange` labels occupy less disk space compared to Prometheus-style buckets with `le` labels,
+Buckets with `vmrange` labels occupy less disk space compared to Promethes-style buckets with `le` labels,
 because `vmrange` buckets don't include counters for the previous ranges. [VictoriaMetrics](https://github.com/VictoriaMetrics/VictoriaMetrics) provides `prometheus_buckets`
 function, which converts `vmrange` buckets to Prometheus-style buckets with `le` labels. This is useful for building heatmaps in Grafana.
-Additionally, its `histogram_quantile` function transparently handles histogram buckets with `vmrange` labels.
-
-However, for compatibility purposes package provides classic [Prometheus Histograms](http://godoc.org/github.com/VictoriaMetrics/metrics#PrometheusHistogram) with `le` labels.
+Additionally, its' `histogram_quantile` function transparently handles histogram buckets with `vmrange` labels.

@@ -13,6 +13,46 @@ import (
 	"github.com/lesismal/nbio/logging"
 )
 
+// ConnType .
+type ConnType = int8
+
+const (
+	// ConnTypeTCP .
+	ConnTypeTCP ConnType = iota + 1
+	// ConnTypeUDPServer .
+	ConnTypeUDPServer
+	// ConnTypeUDPClientFromRead .
+	ConnTypeUDPClientFromRead
+	// ConnTypeUDPClientFromDial .
+	ConnTypeUDPClientFromDial
+	// ConnTypeUnix .
+	ConnTypeUnix
+)
+
+// Type .
+func (c *Conn) Type() ConnType {
+	return c.typ
+}
+
+// IsTCP .
+func (c *Conn) IsTCP() bool {
+	return c.typ == ConnTypeTCP
+}
+
+// IsUDP .
+func (c *Conn) IsUDP() bool {
+	switch c.typ {
+	case ConnTypeUDPServer, ConnTypeUDPClientFromDial, ConnTypeUDPClientFromRead:
+		return true
+	}
+	return false
+}
+
+// IsUnix .
+func (c *Conn) IsUnix() bool {
+	return c.typ == ConnTypeUnix
+}
+
 // OnData registers callback for data.
 func (c *Conn) OnData(h func(conn *Conn, data []byte)) {
 	c.DataHandler = h
@@ -60,11 +100,11 @@ func (c *Conn) ExecuteLen() int {
 }
 
 // Execute .
-func (c *Conn) Execute(f func()) {
+func (c *Conn) Execute(f func()) bool {
 	c.mux.Lock()
 	if c.closed {
 		c.mux.Unlock()
-		return
+		return false
 	}
 
 	isHead := (len(c.execList) == 0)
@@ -72,7 +112,7 @@ func (c *Conn) Execute(f func()) {
 	c.mux.Unlock()
 
 	if isHead {
-		c.g.Execute(func() {
+		c.p.g.Execute(func() {
 			i := 0
 			for {
 				func() {
@@ -99,6 +139,8 @@ func (c *Conn) Execute(f func()) {
 			}
 		})
 	}
+
+	return true
 }
 
 // MustExecute .
@@ -109,7 +151,7 @@ func (c *Conn) MustExecute(f func()) {
 	c.mux.Unlock()
 
 	if isHead {
-		c.g.Execute(func() {
+		c.p.g.Execute(func() {
 			i := 0
 			for {
 				f()

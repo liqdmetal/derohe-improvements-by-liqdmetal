@@ -16,8 +16,9 @@ import (
 )
 
 var (
-	emptyRequest  = http.Request{}
-	emptyResponse = Response{}
+	emptyRequest        = http.Request{}
+	emptyResponse       = Response{}
+	emptyClientResponse = http.Response{}
 
 	requestPool = sync.Pool{
 		New: func() interface{} {
@@ -30,14 +31,27 @@ var (
 			return &Response{}
 		},
 	}
+
+	clientResponsePool = sync.Pool{
+		New: func() interface{} {
+			return &http.Response{}
+		},
+	}
 )
 
-func releaseRequest(req *http.Request) {
+func releaseRequest(req *http.Request, retainHTTPBody bool) {
 	if req != nil {
 		if req.Body != nil {
-			br := req.Body.(*BodyReader)
-			br.close()
-			bodyReaderPool.Put(br)
+			if br, ok := req.Body.(*BodyReader); ok {
+				if retainHTTPBody {
+					br.Reset()
+				} else {
+					br.Close()
+				}
+				bodyReaderPool.Put(br)
+			} else if !retainHTTPBody {
+				req.Body.Close()
+			}
 		}
 		// fast gc for fields
 		*req = emptyRequest
@@ -49,6 +63,18 @@ func releaseResponse(res *Response) {
 	if res != nil {
 		*res = emptyResponse
 		responsePool.Put(res)
+	}
+}
+
+func releaseClientResponse(res *http.Response) {
+	if res != nil {
+		if res.Body != nil {
+			br := res.Body.(*BodyReader)
+			br.Close()
+			bodyReaderPool.Put(br)
+		}
+		*res = emptyClientResponse
+		clientResponsePool.Put(res)
 	}
 }
 
@@ -112,13 +138,23 @@ func (p *ServerProcessor) OnMethod(method string) {
 }
 
 // OnURL .
-func (p *ServerProcessor) OnURL(uri string) error {
-	u, err := url.ParseRequestURI(uri)
+func (p *ServerProcessor) OnURL(rawurl string) error {
+	p.request.RequestURI = rawurl
+
+	justAuthority := p.request.Method == "CONNECT" && !strings.HasPrefix(rawurl, "/")
+	if justAuthority {
+		rawurl = "http://" + rawurl
+	}
+
+	u, err := url.ParseRequestURI(rawurl)
 	if err != nil {
 		return err
 	}
+	if justAuthority {
+		u.Scheme = ""
+	}
+
 	p.request.URL = u
-	p.request.RequestURI = uri
 	return nil
 }
 
@@ -182,6 +218,9 @@ func (p *ServerProcessor) OnComplete(parser *Parser) {
 
 	if p.conn != nil {
 		request.RemoteAddr = p.remoteAddr
+		if parser.Engine.WriteTimeout > 0 {
+			p.conn.SetWriteDeadline(time.Now().Add(parser.Engine.WriteTimeout))
+		}
 	}
 
 	if request.URL.Host == "" {
@@ -225,10 +264,12 @@ func (p *ServerProcessor) OnComplete(parser *Parser) {
 	}
 
 	response := NewResponse(p.parser, request, p.enableSendfile)
-	parser.Execute(func() {
+	if !parser.Execute(func() {
 		p.handler.ServeHTTP(response, request)
 		p.flushResponse(response)
-	})
+	}) {
+		releaseRequest(request, p.parser.Engine.RetainHTTPBody)
+	}
 }
 
 func (p *ServerProcessor) flushResponse(res *Response) {
@@ -238,25 +279,28 @@ func (p *ServerProcessor) flushResponse(res *Response) {
 			res.eoncodeHead()
 			if err := res.flushTrailer(p.conn); err != nil {
 				p.conn.Close()
-				releaseRequest(req)
+				releaseRequest(req, p.parser.Engine.RetainHTTPBody)
 				releaseResponse(res)
 				return
 			}
+			if req.Close {
+				// the data may still in the send queue
+				p.conn.Close()
+			} else if p.parser == nil || p.parser.Reader == nil {
+				p.conn.SetReadDeadline(time.Now().Add(p.keepaliveTime))
+			}
 		}
-		if req.Close {
-			// the data may still in the send queue
-			p.conn.Close()
-		} else if p.parser == nil || p.parser.ConnState == nil {
-			p.conn.SetReadDeadline(time.Now().Add(p.keepaliveTime))
-		}
-		releaseRequest(req)
+		releaseRequest(req, p.parser.Engine.RetainHTTPBody)
 		releaseResponse(res)
 	}
 }
 
 // Close .
 func (p *ServerProcessor) Close(parser *Parser, err error) {
-
+	if p.request != nil {
+		releaseRequest(p.request, parser.Engine.RetainHTTPBody)
+		p.request = nil
+	}
 }
 
 // NewServerProcessor .
@@ -293,7 +337,10 @@ type ClientProcessor struct {
 
 // Conn .
 func (p *ClientProcessor) Conn() net.Conn {
-	return p.conn.conn
+	if p.conn != nil {
+		return p.conn.conn
+	}
+	return nil
 }
 
 // OnMethod .
@@ -316,7 +363,7 @@ func (p *ClientProcessor) OnProto(proto string) error {
 		// 	Proto:  proto,
 		// 	Header: http.Header{},
 		// }
-		p.response = &http.Response{}
+		p.response = clientResponsePool.Get().(*http.Response)
 		p.response.Proto = proto
 		p.response.Header = http.Header{}
 	} else {
@@ -364,13 +411,32 @@ func (p *ClientProcessor) OnTrailerHeader(key, value string) {
 func (p *ClientProcessor) OnComplete(parser *Parser) {
 	res := p.response
 	p.response = nil
-	parser.Execute(func() {
+
+	// Fix #225
+	// Handle upgrade handshake response in the io goroutine to avoid concurrent issue:
+	// 1. when the server may send a message together with handshake response
+	// 2. we handle the handshake response in another goroutine
+	// 3. poller continue reading data using http parser(the upgrader reader hasn't been set before 2)
+	// then we got parsing errors or panic.
+	if res.StatusCode == http.StatusSwitchingProtocols {
 		p.handler(res, nil)
-	})
+		releaseClientResponse(res)
+		return
+	}
+
+	if !parser.Execute(func() {
+		p.handler(res, nil)
+		releaseClientResponse(res)
+	}) {
+		releaseClientResponse(res)
+	}
 }
 
 // Close .
 func (p *ClientProcessor) Close(parser *Parser, err error) {
+	if p.response != nil {
+		releaseClientResponse(p.response)
+	}
 	p.conn.CloseWithError(err)
 }
 
