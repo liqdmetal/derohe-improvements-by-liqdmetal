@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"go/parser"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/blang/semver/v4"
@@ -264,4 +265,28 @@ func (i *DVM_Interpreter) interpret_ENDIF(line []string) (newIP uint64, err erro
 		i.Loops = i.Loops[:n-1]
 	}
 	return 0, nil
+}
+
+// interpret_GOSUB processes "GOSUB <line>" — L2 subroutine call. Pushes the
+// return address (the line after this GOSUB) onto CallStack and jumps to
+// <line>. RETURN (dvm.go) pops the stack when non-empty (subroutine
+// return) instead of ending the function.
+func (i *DVM_Interpreter) interpret_GOSUB(line []string) (newIP uint64, err error) {
+	if err = i.gateControlFlow("GOSUB"); err != nil {
+		return
+	}
+	if len(line) != 1 {
+		return 0, fmt.Errorf("GOSUB requires exactly 1 line number argument")
+	}
+	target, e := strconv.ParseUint(line[0], 0, 64)
+	if e != nil {
+		return 0, fmt.Errorf("GOSUB invalid line number %q", line[0])
+	}
+	if target == 0 || target == math.MaxUint64 {
+		return 0, fmt.Errorf("GOSUB invalid line number %d", target)
+	}
+	// return address = the line after this GOSUB (MaxUint64 if GOSUB is the
+	// last line — RETURN then ends the function, which is correct)
+	i.CallStack = append(i.CallStack, i.nextLineAfter(i.IP))
+	return target, nil
 }

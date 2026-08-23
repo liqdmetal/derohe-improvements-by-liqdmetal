@@ -477,6 +477,12 @@ type DVM_Interpreter struct {
 	// L1 feature, gated on DVM version >= 10.0.0 (control_flow.go).
 	Loops []LoopFrame
 
+	// CallStack holds GOSUB return addresses (L2 subroutines). Each entry
+	// is the line AFTER the GOSUB line; RETURN pops it when non-empty and
+	// jumps there (subroutine return), else behaves as a function return.
+	// Gated on DVM version >= 10.0.0 (control_flow.go).
+	CallStack []uint64
+
 }
 
 func (i *DVM_Interpreter) incrementIP(newip uint64) (line []string, err error) {
@@ -553,7 +559,9 @@ func (i *DVM_Interpreter) interpret_SmartContract() (err error) {
 		case strings.EqualFold(line[0], "RETURN"):
 			newIP, err = i.interpret_RETURN(line[1:])
 
-		// L1 structured control flow (gated on DVM >= 10.0.0)
+		// L1/L2 structured control flow (gated on DVM >= 10.0.0)
+		case strings.EqualFold(line[0], "GOSUB"):
+			newIP, err = i.interpret_GOSUB(line[1:])
 		case strings.EqualFold(line[0], "FOR"):
 			newIP, err = i.interpret_FOR(line[1:])
 		case strings.EqualFold(line[0], "NEXT"):
@@ -848,6 +856,16 @@ func (dvm *DVM_Interpreter) interpret_IF(line []string) (newIP uint64, err error
 
 // process RETURN line
 func (dvm *DVM_Interpreter) interpret_RETURN(line []string) (newIP uint64, err error) {
+
+	// L2: subroutine return — if we're inside a GOSUB (CallStack non-empty),
+	// pop the return address and jump there. The RETURN value is ignored
+	// (subroutines communicate via shared Locals). Gated like GOSUB.
+	if len(dvm.CallStack) > 0 {
+		n := len(dvm.CallStack)
+		ret := dvm.CallStack[n-1]
+		dvm.CallStack = dvm.CallStack[:n-1]
+		return ret, nil
+	}
 
 	if dvm.ReturnValue.Type == Invalid {
 		if len(line) != 0 {
