@@ -822,7 +822,12 @@ func (dvm *DVM_Interpreter) interpret_LET(line []string) (newIP uint64, err erro
 			if !ok {
 				return 0, fmt.Errorf("array element is Bool, expression is %T", expr_result)
 			}
-			arr[idx].ValueUint64 = val
+			// normalize to 0/1 (non-canonical Bool — wargame finding)
+			if val != 0 {
+				arr[idx].ValueUint64 = 1
+			} else {
+				arr[idx].ValueUint64 = 0
+			}
 		default:
 			panic("Unhandled data_type")
 		}
@@ -860,8 +865,14 @@ func (dvm *DVM_Interpreter) interpret_LET(line []string) (newIP uint64, err erro
 	case String:
 		result.ValueString = expr_result.(string)
 	case Bool:
-		// a Bool variable accepts any uint64 expression (0/1)
-		result.ValueUint64 = expr_result.(uint64)
+		// a Bool accepts any uint64 expression; NORMALIZE to 0/1 so a
+		// Bool can never hold a non-canonical value that is truthy for
+		// IF/LAND/LOR but != TRUE (==1) — wargame finding (L6)
+		if expr_result.(uint64) != 0 {
+			result.ValueUint64 = 1
+		} else {
+			result.ValueUint64 = 0
+		}
 
 	default:
 		panic("Unhandled data_type")
