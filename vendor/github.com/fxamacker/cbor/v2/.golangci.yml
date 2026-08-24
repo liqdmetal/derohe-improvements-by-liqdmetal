@@ -22,9 +22,9 @@ linters-settings:
       - octalLiteral
       - paramTypeCombine
       - whyNoLint
-      - wrapperFunc
+      - wrapperFunc    
   gofmt:
-    simplify: false
+    simplify: false    
   goimports:
     local-prefixes: github.com/fxamacker/cbor
   golint:
@@ -41,20 +41,23 @@ linters-settings:
 linters:
   disable-all: true
   enable:
+    - deadcode
     - errcheck
     - goconst
     - gocyclo
-    # - gofmt       # handled by safer-golangci-lint.yml
-    # - goimports   # handled by safer-golangci-lint.yml
+    - gofmt
+    - goimports
     - gosec
     - govet
     - ineffassign
     - misspell
-    # - revive      # temporarily disabled to reduce noise in golangci-lint 1.52.2
+    - revive
     - staticcheck
+    - structcheck
     - typecheck
     - unconvert
     - unused
+    - varcheck
 
 issues:
   # max-issues-per-linter default is 50.  Set to 0 to disable limit.
@@ -68,7 +71,7 @@ issues:
         - goconst
         - dupl
         - gomnd
-        - lll
+        - lll        
     - path: doc\.go
       linters:
         - goimports
