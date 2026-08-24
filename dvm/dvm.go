@@ -1394,19 +1394,43 @@ func (dvm *DVM_Interpreter) evalBinaryExpr(exp *ast.BinaryExpr) interface{} {
 		}
 		switch exp.Op {
 		case token.ADD:
+			// overflow check: (a+b) overflows iff the sign of the result
+			// differs from both operands
+			if (r64 > 0 && l64 > int64(math.MaxInt64)-r64) || (r64 < 0 && l64 < int64(math.MinInt64)-r64) {
+				panic("int64 overflow on ADD")
+			}
 			return l64 + r64
 		case token.SUB:
+			if (r64 < 0 && l64 > int64(math.MaxInt64)+r64) || (r64 > 0 && l64 < int64(math.MinInt64)+r64) {
+				panic("int64 overflow on SUB")
+			}
 			return l64 - r64
 		case token.MUL:
+			if l64 != 0 && r64 != 0 {
+				if l64 == int64(math.MinInt64) && r64 == -1 {
+					panic("int64 overflow on MUL")
+				}
+				p := l64 * r64
+				if p/r64 != l64 {
+					panic("int64 overflow on MUL")
+				}
+				return p
+			}
 			return l64 * r64
 		case token.QUO:
 			if r64 == 0 {
 				panic("division by zero")
 			}
+			if l64 == int64(math.MinInt64) && r64 == -1 {
+				panic("int64 division overflow (MinInt64 / -1)")
+			}
 			return l64 / r64
 		case token.REM:
 			if r64 == 0 {
 				panic("division by zero")
+			}
+			if l64 == int64(math.MinInt64) && r64 == -1 {
+				return int64(0) // Go: MinInt64 % -1 == 0 (matches the math)
 			}
 			return l64 % r64
 		case token.EQL:
