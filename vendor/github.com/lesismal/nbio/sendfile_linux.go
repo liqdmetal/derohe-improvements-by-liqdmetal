@@ -9,6 +9,7 @@ package nbio
 
 import (
 	"errors"
+	"net"
 	"os"
 	"syscall"
 )
@@ -23,7 +24,7 @@ func (c *Conn) Sendfile(f *os.File, remain int64) (int64, error) {
 	c.mux.Lock()
 	if c.closed {
 		c.mux.Unlock()
-		return -1, errClosed
+		return -1, net.ErrClosed
 	}
 
 	if remain <= 0 {
@@ -42,12 +43,12 @@ func (c *Conn) Sendfile(f *os.File, remain int64) (int64, error) {
 		<-c.chWaitWrite
 		if c.closed {
 			c.chWaitWrite = nil
-			return -1, errClosed
+			return -1, net.ErrClosed
 		}
 		c.mux.Lock()
 	}
 
-	c.g.beforeWrite(c)
+	c.p.g.beforeWrite(c)
 
 	var (
 		err   error

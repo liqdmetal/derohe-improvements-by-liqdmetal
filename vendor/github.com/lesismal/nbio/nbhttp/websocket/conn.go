@@ -49,14 +49,15 @@ type Conn struct {
 
 	mux sync.Mutex
 
-	isClient bool
-
+	isClient                 bool
 	onCloseCalled            bool
 	remoteCompressionEnabled bool
 	enableWriteCompression   bool
 	compressionLevel         int
 
 	subprotocol string
+
+	chAsyncWrite chan []byte
 
 	session interface{}
 
@@ -104,6 +105,10 @@ func validCloseCode(code int) bool {
 	return false
 }
 
+// func (c *Conn) Close() error {
+// 	return c.Conn.Close()
+// }
+
 // OnClose .
 func (c *Conn) OnClose(h func(*Conn, error)) {
 	if h != nil {
@@ -112,6 +117,10 @@ func (c *Conn) OnClose(h func(*Conn, error)) {
 			defer c.mux.Unlock()
 			if !c.onCloseCalled {
 				c.onCloseCalled = true
+				// if c.chAsyncWrite != nil {
+				// 	close(c.chAsyncWrite)
+				// c.chAsyncWrite = nil
+				// }
 				h(c, err)
 			}
 		}
@@ -148,6 +157,8 @@ func (c *Conn) WriteMessage(messageType MessageType, data []byte) error {
 	compress := c.enableWriteCompression && (messageType == TextMessage || messageType == BinaryMessage)
 	if compress {
 		compress = true
+		// if user customize mempool, they should promise it's safe to mempool.Free a buffer which is not from their mempool.Malloc
+		// or we need to implement a writebuffer that use mempool.Realloc to grow or append the buffer
 		w := &writeBuffer{
 			Buffer: bytes.NewBuffer(mempool.Malloc(len(data))),
 		}
@@ -268,7 +279,19 @@ func (c *Conn) writeFrame(messageType MessageType, sendOpcode, fin bool, data []
 		buf[0] |= byte(0x80)
 	}
 
+	if c.chAsyncWrite != nil {
+		select {
+		case c.chAsyncWrite <- buf:
+		default:
+			mempool.Free(buf)
+			return ErrMessageSendQuqueIsFull
+		}
+		return nil
+	}
+
 	_, err := c.Conn.Write(buf)
+	mempool.Free(buf)
+
 	return err
 }
 
@@ -297,9 +320,15 @@ func (c *Conn) SetCompressionLevel(level int) error {
 	return nil
 }
 
-func newConn(u *Upgrader, c net.Conn, subprotocol string, remoteCompressionEnabled bool) *Conn {
+// Subprotocol returns the negotiated websocket subprotocol.
+func (c *Conn) Subprotocol() string {
+	return c.subprotocol
+}
+
+func NewConn(u *Upgrader, c net.Conn, subprotocol string, remoteCompressionEnabled bool, asyncWrite bool) *Conn {
 	conn := &Conn{
 		Conn:                     c,
+		Engine:                   u.Engine,
 		subprotocol:              subprotocol,
 		remoteCompressionEnabled: remoteCompressionEnabled,
 		compressionLevel:         defaultCompressionLevel,
@@ -307,6 +336,10 @@ func newConn(u *Upgrader, c net.Conn, subprotocol string, remoteCompressionEnabl
 	}
 	conn.EnableWriteCompression(u.enableWriteCompression)
 	conn.SetCompressionLevel(u.compressionLevel)
+	if asyncWrite {
+		conn.chAsyncWrite = make(chan []byte, 4096)
+	}
+	u.conn = conn
 
 	return conn
 }

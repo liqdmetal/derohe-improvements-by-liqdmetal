@@ -19,8 +19,6 @@ type Set struct {
 	a         []*namedMetric
 	m         map[string]*namedMetric
 	summaries []*Summary
-
-	metricsWriters []func(w io.Writer)
 }
 
 // NewSet creates new set of metrics.
@@ -47,27 +45,14 @@ func (s *Set) WritePrometheus(w io.Writer) {
 		sort.Slice(s.a, lessFunc)
 	}
 	sa := append([]*namedMetric(nil), s.a...)
-	metricsWriters := s.metricsWriters
 	s.mu.Unlock()
 
-	prevMetricFamily := ""
+	// Call marshalTo without the global lock, since certain metric types such as Gauge
+	// can call a callback, which, in turn, can try calling s.mu.Lock again.
 	for _, nm := range sa {
-		metricFamily := getMetricFamily(nm.name)
-		if metricFamily != prevMetricFamily {
-			// write meta info only once per metric family
-			metricType := nm.metric.metricType()
-			WriteMetadataIfNeeded(&bb, nm.name, metricType)
-			prevMetricFamily = metricFamily
-		}
-		// Call marshalTo without the global lock, since certain metric types such as Gauge
-		// can call a callback, which, in turn, can try calling s.mu.Lock again.
 		nm.metric.marshalTo(nm.name, &bb)
 	}
 	w.Write(bb.Bytes())
-
-	for _, writeMetrics := range metricsWriters {
-		writeMetrics(w)
-	}
 }
 
 // NewHistogram creates and returns new histogram in s with the given name.
@@ -105,7 +90,7 @@ func (s *Set) GetOrCreateHistogram(name string) *Histogram {
 	s.mu.Unlock()
 	if nm == nil {
 		// Slow path - create and register missing histogram.
-		if err := ValidateMetric(name); err != nil {
+		if err := validateMetric(name); err != nil {
 			panic(fmt.Errorf("BUG: invalid metric name %q: %s", name, err))
 		}
 		nmNew := &namedMetric{
@@ -124,99 +109,6 @@ func (s *Set) GetOrCreateHistogram(name string) *Histogram {
 	h, ok := nm.metric.(*Histogram)
 	if !ok {
 		panic(fmt.Errorf("BUG: metric %q isn't a Histogram. It is %T", name, nm.metric))
-	}
-	return h
-}
-
-// NewPrometheusHistogram creates and returns new PrometheusHistogram in s
-// with the given name and PrometheusHistogramDefaultBuckets.
-//
-// name must be valid Prometheus-compatible metric with possible labels.
-// For instance,
-//
-//   - foo
-//   - foo{bar="baz"}
-//   - foo{bar="baz",aaa="b"}
-//
-// The returned histogram is safe to use from concurrent goroutines.
-func (s *Set) NewPrometheusHistogram(name string) *PrometheusHistogram {
-	return s.NewPrometheusHistogramExt(name, PrometheusHistogramDefaultBuckets)
-}
-
-// NewPrometheusHistogramExt creates and returns new PrometheusHistogram in s
-// with the given name and upperBounds.
-//
-// name must be valid Prometheus-compatible metric with possible labels.
-// For instance,
-//
-//   - foo
-//   - foo{bar="baz"}
-//   - foo{bar="baz",aaa="b"}
-//
-// The returned histogram is safe to use from concurrent goroutines.
-func (s *Set) NewPrometheusHistogramExt(name string, upperBounds []float64) *PrometheusHistogram {
-	h := newPrometheusHistogram(upperBounds)
-	s.registerMetric(name, h)
-	return h
-}
-
-// GetOrCreatePrometheusHistogram returns registered prometheus histogram in s
-// with the given name or creates new histogram if s doesn't contain histogram
-// with the given name.
-//
-// name must be valid Prometheus-compatible metric with possible labels.
-// For instance,
-//
-//   - foo
-//   - foo{bar="baz"}
-//   - foo{bar="baz",aaa="b"}
-//
-// The returned histogram is safe to use from concurrent goroutines.
-//
-// Performance tip: prefer NewPrometheusHistogram instead of GetOrCreatePrometheusHistogram.
-func (s *Set) GetOrCreatePrometheusHistogram(name string) *PrometheusHistogram {
-	return s.GetOrCreatePrometheusHistogramExt(name, PrometheusHistogramDefaultBuckets)
-}
-
-// GetOrCreatePrometheusHistogramExt returns registered prometheus histogram in
-// s with the given name or creates new histogram if s doesn't contain
-// histogram with the given name.
-//
-// name must be valid Prometheus-compatible metric with possible labels.
-// For instance,
-//
-//   - foo
-//   - foo{bar="baz"}
-//   - foo{bar="baz",aaa="b"}
-//
-// The returned histogram is safe to use from concurrent goroutines.
-//
-// Performance tip: prefer NewPrometheusHistogramExt instead of GetOrCreatePrometheusHistogramExt.
-func (s *Set) GetOrCreatePrometheusHistogramExt(name string, upperBounds []float64) *PrometheusHistogram {
-	s.mu.Lock()
-	nm := s.m[name]
-	s.mu.Unlock()
-	if nm == nil {
-		// Slow path - create and register missing histogram.
-		if err := ValidateMetric(name); err != nil {
-			panic(fmt.Errorf("BUG: invalid metric name %q: %s", name, err))
-		}
-		nmNew := &namedMetric{
-			name:   name,
-			metric: newPrometheusHistogram(upperBounds),
-		}
-		s.mu.Lock()
-		nm = s.m[name]
-		if nm == nil {
-			nm = nmNew
-			s.m[name] = nm
-			s.a = append(s.a, nm)
-		}
-		s.mu.Unlock()
-	}
-	h, ok := nm.metric.(*PrometheusHistogram)
-	if !ok {
-		panic(fmt.Errorf("BUG: metric %q isn't a PrometheusHistogram. It is %T", name, nm.metric))
 	}
 	return h
 }
@@ -256,7 +148,7 @@ func (s *Set) GetOrCreateCounter(name string) *Counter {
 	s.mu.Unlock()
 	if nm == nil {
 		// Slow path - create and register missing counter.
-		if err := ValidateMetric(name); err != nil {
+		if err := validateMetric(name); err != nil {
 			panic(fmt.Errorf("BUG: invalid metric name %q: %s", name, err))
 		}
 		nmNew := &namedMetric{
@@ -314,7 +206,7 @@ func (s *Set) GetOrCreateFloatCounter(name string) *FloatCounter {
 	s.mu.Unlock()
 	if nm == nil {
 		// Slow path - create and register missing counter.
-		if err := ValidateMetric(name); err != nil {
+		if err := validateMetric(name); err != nil {
 			panic(fmt.Errorf("BUG: invalid metric name %q: %s", name, err))
 		}
 		nmNew := &namedMetric{
@@ -351,6 +243,9 @@ func (s *Set) GetOrCreateFloatCounter(name string) *FloatCounter {
 //
 // The returned gauge is safe to use from concurrent goroutines.
 func (s *Set) NewGauge(name string, f func() float64) *Gauge {
+	if f == nil {
+		panic(fmt.Errorf("BUG: f cannot be nil"))
+	}
 	g := &Gauge{
 		f: f,
 	}
@@ -377,7 +272,10 @@ func (s *Set) GetOrCreateGauge(name string, f func() float64) *Gauge {
 	s.mu.Unlock()
 	if nm == nil {
 		// Slow path - create and register missing gauge.
-		if err := ValidateMetric(name); err != nil {
+		if f == nil {
+			panic(fmt.Errorf("BUG: f cannot be nil"))
+		}
+		if err := validateMetric(name); err != nil {
 			panic(fmt.Errorf("BUG: invalid metric name %q: %s", name, err))
 		}
 		nmNew := &namedMetric{
@@ -428,7 +326,7 @@ func (s *Set) NewSummary(name string) *Summary {
 //
 // The returned summary is safe to use from concurrent goroutines.
 func (s *Set) NewSummaryExt(name string, window time.Duration, quantiles []float64) *Summary {
-	if err := ValidateMetric(name); err != nil {
+	if err := validateMetric(name); err != nil {
 		panic(fmt.Errorf("BUG: invalid metric name %q: %s", name, err))
 	}
 	sm := newSummary(window, quantiles)
@@ -482,7 +380,7 @@ func (s *Set) GetOrCreateSummaryExt(name string, window time.Duration, quantiles
 	s.mu.Unlock()
 	if nm == nil {
 		// Slow path - create and register missing summary.
-		if err := ValidateMetric(name); err != nil {
+		if err := validateMetric(name); err != nil {
 			panic(fmt.Errorf("BUG: invalid metric name %q: %s", name, err))
 		}
 		sm := newSummary(window, quantiles)
@@ -527,7 +425,7 @@ func (s *Set) registerSummaryQuantilesLocked(name string, sm *Summary) {
 }
 
 func (s *Set) registerMetric(name string, m metric) {
-	if err := ValidateMetric(name); err != nil {
+	if err := validateMetric(name); err != nil {
 		panic(fmt.Errorf("BUG: invalid metric name %q: %s", name, err))
 	}
 	s.mu.Lock()
@@ -623,22 +521,14 @@ func (s *Set) unregisterMetricLocked(nm *namedMetric) bool {
 }
 
 // UnregisterAllMetrics de-registers all metrics registered in s.
-//
-// It also de-registers writeMetrics callbacks passed to RegisterMetricsWriter.
 func (s *Set) UnregisterAllMetrics() {
 	metricNames := s.ListMetricNames()
 	for _, name := range metricNames {
 		s.UnregisterMetric(name)
 	}
-
-	s.mu.Lock()
-	s.metricsWriters = nil
-	s.mu.Unlock()
 }
 
 // ListMetricNames returns sorted list of all the metrics in s.
-//
-// The returned list doesn't include metrics generated by metricsWriter passed to RegisterMetricsWriter.
 func (s *Set) ListMetricNames() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -651,18 +541,4 @@ func (s *Set) ListMetricNames() []string {
 	}
 	sort.Strings(metricNames)
 	return metricNames
-}
-
-// RegisterMetricsWriter registers writeMetrics callback for including metrics in the output generated by s.WritePrometheus.
-//
-// The writeMetrics callback must write metrics to w in Prometheus text exposition format without timestamps and trailing comments.
-// The last line generated by writeMetrics must end with \n.
-// See https://github.com/prometheus/docs/blob/main/content/docs/instrumenting/exposition_formats.md#text-based-format
-//
-// It is OK to reguster multiple writeMetrics callbacks - all of them will be called sequentially for gererating the output at s.WritePrometheus.
-func (s *Set) RegisterMetricsWriter(writeMetrics func(w io.Writer)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.metricsWriters = append(s.metricsWriters, writeMetrics)
 }

@@ -172,7 +172,9 @@ func (d *Dialer) DialContext(ctx context.Context, urlStr string, requestHeader h
 					}
 				}
 			} else {
-				asyncHandler(wsConn, res, e)
+				d.Engine.Execute(func() {
+					asyncHandler(wsConn, res, e)
+				})
 			}
 		}
 
@@ -203,9 +205,8 @@ func (d *Dialer) DialContext(ctx context.Context, urlStr string, requestHeader h
 			notifyResult(err)
 			return
 		}
-		state := &connState{common: upgrader}
 
-		parser.ConnState = state
+		parser.Reader = upgrader
 
 		if d.Jar != nil {
 			if rc := resp.Cookies(); len(rc) > 0 {
@@ -239,13 +240,13 @@ func (d *Dialer) DialContext(ctx context.Context, urlStr string, requestHeader h
 			break
 		}
 
-		wsConn = newConn(upgrader, conn, resp.Header.Get(secWebsocketProtoHeaderField), remoteCompressionEnabled)
+		wsConn = NewConn(upgrader, conn, resp.Header.Get(secWebsocketProtoHeaderField), remoteCompressionEnabled, false)
 		wsConn.isClient = true
 		wsConn.Engine = d.Engine
 		wsConn.OnClose(upgrader.onClose)
 
-		state.conn = wsConn
-		state.Engine = parser.Engine
+		upgrader.conn = wsConn
+		upgrader.Engine = parser.Engine
 
 		if upgrader.openHandler != nil {
 			upgrader.openHandler(wsConn)
