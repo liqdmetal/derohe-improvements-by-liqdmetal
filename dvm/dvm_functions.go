@@ -900,14 +900,30 @@ func dvm_verify_adaptor(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool,
 	}
 
 	P := &bn256.G1{}
+	// STRICT decode (chain-split class, see I3/v9 wargame): DecodeCompressed
+	// accepts x >= p encodings (computes y from x mod p, stores raw x); a
+	// strict decoder rejects them. Canonicalize the boundary: x must be < p.
+	if xi := new(big.Int).SetBytes(pub_bytes[0:32]); xi.Cmp(bn256.P) >= 0 {
+		return true, uint64(0)
+	}
 	if err := P.DecodeCompressed(pub_bytes); err != nil {
 		return true, uint64(0)
 	}
 	R := &bn256.G1{}
+	if xi := new(big.Int).SetBytes(sig_bytes[64:96]); xi.Cmp(bn256.P) >= 0 {
+		return true, uint64(0)
+	}
 	if err := R.DecodeCompressed(sig_bytes[64:97]); err != nil {
 		return true, uint64(0)
 	}
 	s := new(big.Int).SetBytes(sig_bytes[:64])
+	// LOW-S / canonical scalar (wargame: malleability): s must be < n (group
+	// order). Without this, s and s+n both verify (ScalarMult reduces mod n
+	// internally) — a signature is malleable. Reject s >= n so the encoded
+	// signature is unique.
+	if s.Cmp(bn256.Order) >= 0 {
+		return true, uint64(0)
+	}
 
 	// e = ReducedHash(R' || P || m)  (scalar mod n)
 	hash_input := append([]byte{}, R.EncodeCompressed()...)
