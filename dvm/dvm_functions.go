@@ -101,6 +101,8 @@ func init() {
 	func_table["verify_commit"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 45000, StorageCost: 0, PtrU: dvm_verify_commit}}   // P0-3: confidential settlement
 	func_table["asset_balance"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 2000, StorageCost: 0, PtrU: dvm_asset_balance}}   // I1: read SC's own stored balance for any asset (incl. DERO)
 	func_table["ec_add"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 15000, StorageCost: 0, PtrS: dvm_ec_add}}               // I2: homomorphic accumulation of commitments
+	func_table["ec_mul"] = []func_data{func_data{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 30000, StorageCost: 0, PtrS: dvm_ec_mul}}               // I3: point scalar multiplication
+	func_table["verify_adaptor"] = []func_data{func_data{Range: semver.MustParseRange(">=10.0.0"), ComputeCost: 250000, StorageCost: 0, PtrU: dvm_verify_adaptor}} // I4: adaptor-signature verification for cross-chain atomic
 }
 
 // this will handle all internal functions which may be required/necessary to expand DVM functionality
@@ -693,7 +695,7 @@ func dvm_verify_sig(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, res
 // trusting an external oracle — the dvm_functions.go:35-38 comment's trust
 // assumption becomes a language primitive. Deterministic across nodes:
 // HashToPoint(HashtoNumber(input)) has no randomness.
-
+//
 // strictDecodeG1 decodes a 33-byte compressed bn256 G1 point with STRICT
 // encoding validation: x must be < p (the base-field modulus). Go's
 // DecodeCompressed accepts x >= p (xToY computes y from x mod p but the
@@ -716,6 +718,8 @@ func strictDecodeG1(b []byte) (*bn256.G1, error) {
 	return pt, nil
 }
 
+// dvm_hash_to_point hashes input to a protocol point (P0-4). Deterministic
+// across nodes: HashToPoint(HashtoNumber(input)) has no randomness.
 func dvm_hash_to_point(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result string) {
 	checkargscount(1, len(expr.Args))
 	input, ok := dvm.eval(expr.Args[0]).(string)
@@ -869,4 +873,112 @@ func dvm_ec_add(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result 
 
 	sum := new(bn256.G1).Add(p1pt, p2pt)
 	return true, hex.EncodeToString(sum.EncodeCompressed())
+}
+
+// dvm_ec_mul multiplies a compressed bn256 G1 point by a scalar (uint64).
+// ec_mul(point_hex String, scalar Uint64) -> String (33-byte compressed point, hex)
+//
+// I3: point scalar multiplication for point derivation and key blinding —
+// the homomorphic counterpart to ec_add (I2). Combined, a contract can
+// build and accumulate commitments entirely in-VM.
+func dvm_ec_mul(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result string) {
+	checkargscount(2, len(expr.Args))
+
+	point_hex, ok := dvm.eval(expr.Args[0]).(string)
+	if !ok {
+		panic("ec_mul: point must be a hex string (33-byte compressed point)")
+	}
+	scalar, ok := dvm.eval(expr.Args[1]).(uint64)
+	if !ok {
+		panic("ec_mul: scalar must be Uint64")
+	}
+
+	point_bytes, err := hex.DecodeString(point_hex)
+	if err != nil || len(point_bytes) != 33 {
+		panic("ec_mul: point must be a hex string of 33 bytes")
+	}
+
+	pt, err := strictDecodeG1(point_bytes)
+	if err != nil {
+		panic("ec_mul: not a valid compressed point")
+	}
+
+	mul := new(bn256.G1).ScalarMult(pt, new(big.Int).SetUint64(scalar))
+	return true, hex.EncodeToString(mul.EncodeCompressed())
+}
+
+// dvm_verify_adaptor verifies a Schnorr adaptor signature on bn256 (I4):
+// the cross-chain atomic primitive. verify_adaptor(pubkey_hex, message_hex,
+// adaptor_sig_hex) -> 0/1. Proves "the holder of x can sign m once tweak t
+// is revealed" WITHOUT revealing t: s'*G == R' + e*P where
+// e = ReducedHash(R' || P || m). Strict point decode + low-s scalar so the
+// signature is non-malleable and off-curve encodings are rejected.
+func dvm_verify_adaptor(dvm *DVM_Interpreter, expr *ast.CallExpr) (handled bool, result uint64) {
+	checkargscount(3, len(expr.Args))
+
+	pub_hex, ok := dvm.eval(expr.Args[0]).(string)
+	if !ok {
+		panic("verify_adaptor: pubkey must be a hex string (33-byte compressed point)")
+	}
+	msg_hex, ok := dvm.eval(expr.Args[1]).(string)
+	if !ok {
+		panic("verify_adaptor: message must be a hex string")
+	}
+	sig_hex, ok := dvm.eval(expr.Args[2]).(string)
+	if !ok {
+		panic("verify_adaptor: adaptor sig must be a hex string (97 bytes)")
+	}
+
+	pub_bytes, err := hex.DecodeString(pub_hex)
+	if err != nil || len(pub_bytes) != 33 {
+		return true, uint64(0)
+	}
+	msg_bytes, err := hex.DecodeString(msg_hex)
+	if err != nil {
+		return true, uint64(0)
+	}
+	sig_bytes, err := hex.DecodeString(sig_hex)
+	if err != nil || len(sig_bytes) != 97 {
+		return true, uint64(0)
+	}
+
+	P := &bn256.G1{}
+	// STRICT decode (chain-split class, see I3/v9 wargame): DecodeCompressed
+	// accepts x >= p encodings (computes y from x mod p, stores raw x); a
+	// strict decoder rejects them. Canonicalize the boundary: x must be < p.
+	if xi := new(big.Int).SetBytes(pub_bytes[0:32]); xi.Cmp(bn256.P) >= 0 {
+		return true, uint64(0)
+	}
+	if err := P.DecodeCompressed(pub_bytes); err != nil {
+		return true, uint64(0)
+	}
+	R := &bn256.G1{}
+	if xi := new(big.Int).SetBytes(sig_bytes[64:96]); xi.Cmp(bn256.P) >= 0 {
+		return true, uint64(0)
+	}
+	if err := R.DecodeCompressed(sig_bytes[64:97]); err != nil {
+		return true, uint64(0)
+	}
+	s := new(big.Int).SetBytes(sig_bytes[:64])
+	// LOW-S / canonical scalar (wargame: malleability): s must be < n (group
+	// order). Without this, s and s+n both verify (ScalarMult reduces mod n
+	// internally) — a signature is malleable. Reject s >= n so the encoded
+	// signature is unique.
+	if s.Cmp(bn256.Order) >= 0 {
+		return true, uint64(0)
+	}
+
+	// e = ReducedHash(R' || P || m)  (scalar mod n)
+	hash_input := append([]byte{}, R.EncodeCompressed()...)
+	hash_input = append(hash_input, P.EncodeCompressed()...)
+	hash_input = append(hash_input, msg_bytes...)
+	e := crypto.ReducedHash(hash_input)
+
+	// s'*G == R' + e*P ?
+	lhs := new(bn256.G1).ScalarMult(crypto.G, s)
+	rhs := new(bn256.G1).Add(R, new(bn256.G1).ScalarMult(P, e))
+	if lhs.String() == rhs.String() {
+		return true, uint64(1)
+	}
+	return true, uint64(0)
 }
