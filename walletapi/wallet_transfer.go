@@ -409,19 +409,23 @@ func (w *Wallet_Memory) TransferPayload0(transfers []rpc.Transfer, ringsize uint
 					continue
 				}
 
-				// decode the embedded encrypted balance (already carried in
-				// the batch — no extra RPC, no leak). Serialized ElGamal is
-				// 66 bytes = 2 x 33-byte compressed points.
+				// decode the embedded encrypted balance + nonce height
+				// (the tree value is NonceBalance: uvarint NonceHeight +
+				// 66B ElGamal — same format GetEncryptedBalance returns)
 				ebal_bytes, herr := hex.DecodeString(c.EncryptedBalance)
-				if herr != nil || len(ebal_bytes) != 66 {
+				if herr != nil || len(ebal_bytes) < 67 {
 					continue
 				}
-				ebal := new(crypto.ElGamal)
-				if err := ebal.Deserialize(ebal_bytes); err != nil {
+				var nb crypto.NonceBalance
+				func() {
+					defer func() { recover() }() // Unmarshal panics on malformed input
+					nb.Unmarshal(ebal_bytes)
+				}()
+				if nb.Balance == nil {
 					continue
 				}
 
-				ring_balances = append(ring_balances, ebal.Serialize())
+				ring_balances = append(ring_balances, nb.Balance.Serialize())
 				ring = append(ring, addr_member.PublicKey.G1())
 			}
 
