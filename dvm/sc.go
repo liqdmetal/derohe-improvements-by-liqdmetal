@@ -123,7 +123,7 @@ func Execute_sc_function(w_sc_tree *Tree_Wrapper, data_tree *Tree_Wrapper, scid 
 	defer func() {
 		if r := recover(); r != nil { // safety so if anything wrong happens, verification fails
 			if err == nil {
-				err = fmt.Errorf("Stack trace  \n%s", debug.Stack())
+				err = fmt.Errorf("panic: %v\n Stack trace  \n%s", r, debug.Stack())
 			}
 			//logger.V(1).Error(err, "Recovered while rewinding chain,", "r", r, "stack trace", string(debug.Stack()))
 		}
