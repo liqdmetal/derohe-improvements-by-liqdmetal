@@ -51,6 +51,7 @@ End Function
 // signs the call, contract authorizes; wrong key / tampered sig rejected.
 func TestFixC_WalletSignedAuthorization(t *testing.T) {
 	s := SimulatorInitialize(nil, 0)
+	s.version = 4 // chain HF 4 activates DVM v9 (see ChainVersionFromHardFork)
 	addr, err := rpc.NewAddress(strings.TrimSpace("deto1qy0ehnqjpr0wxqnknyc66du2fsxyktppkr8m8e6jvplp954klfjz2qqdzcd8p"))
 	if err != nil {
 		t.Fatal(err)

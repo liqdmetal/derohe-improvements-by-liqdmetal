@@ -132,7 +132,11 @@ func (dvm *DVM_Interpreter) Handle_Internal_Function(expr *ast.CallExpr, func_na
 
 	if func_data_array, ok := func_table[strings.ToLower(func_name)]; ok {
 		for _, f := range func_data_array {
-			if f.Range(dvm.Version) {
+			// an opcode is available only when BOTH the contract's declared
+			// version and the chain's activated version satisfy its Range;
+			// a zero ChainVersion (off-chain execution) imposes no gate
+			chainOK := dvm.State == nil || dvm.State.ChainVersion.EQ(semver.Version{}) || f.Range(dvm.State.ChainVersion)
+			if f.Range(dvm.Version) && chainOK {
 				dvm.State.ConsumeGas(f.ComputeCost)
 				dvm.State.ConsumeCryptoBudget(f.CryptoCost)
 				if f.PtrU != nil {

@@ -16,6 +16,10 @@
 
 package dvm
 
+import (
+	"github.com/blang/semver/v4"
+)
+
 // Crypto budget (DVM v9 intrinsics): a deterministic, cost-weighted cap on the
 // expensive elliptic-curve and signature intrinsics.
 //
@@ -74,6 +78,27 @@ func (state *Shared_State) EnableCryptoBudget() {
 	if state != nil {
 		state.CryptoBudgetLimit = CRYPTO_BUDGET_UNITS
 		state.CryptoBudgetCheck = true
+	}
+}
+
+// ChainVersionFromHardFork maps a chain hard-fork version to the DVM feature
+// version it activates. This is the gate that stops the v9/v10 crypto intrinsics
+// from being self-activated by a contract: a contract can declare any version it
+// likes via VERSION(), but an intrinsic is only callable if BOTH the declared
+// version and the chain version satisfy its Range.
+//
+// Versions 1-3 (current mainnet) activate nothing at v9: the intrinsics stay
+// off until a real hard fork raises the mapping. Assigning the feature to hard
+// fork 4 (v9) and 5 (v10) is the proposed activation; adjust the numbers to
+// whatever fork actually ships the intrinsics, but never remove the ceiling.
+func ChainVersionFromHardFork(hardForkVersion int64) semver.Version {
+	switch {
+	case hardForkVersion >= 5:
+		return semver.MustParse("10.0.0")
+	case hardForkVersion == 4:
+		return semver.MustParse("9.0.0")
+	default: // 0-3: no crypto intrinsics activated
+		return semver.MustParse("8.0.0")
 	}
 }
 

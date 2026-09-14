@@ -193,24 +193,7 @@ func TestCryptoBudgetPersistsAcrossNestedCalls(t *testing.T) {
 func TestCryptoBudgetEndToEndProgram(t *testing.T) {
 	point := cbPointHex()
 
-	program := func(calls int) string {
-		var b strings.Builder
-		b.WriteString("Function TestRun(p String) Uint64\n")
-		b.WriteString(" 10 dim r as String\n")
-		b.WriteString(" 20 dim v as Uint64\n")
-		// VERSION() is the only writer of dvm.Version: the chain's
-		// hard_fork_version_current is a dead parameter in Execute_sc_function,
-		// so the >=9.0.0 gate is author-declared rather than chain-activated.
-		b.WriteString(" 30 LET v = VERSION(\"9.0.0\")\n")
-		line := 40
-		for i := 0; i < calls; i++ {
-			fmt.Fprintf(&b, " %d LET r = EC_MUL(p, 2)\n", line)
-			line += 10
-		}
-		fmt.Fprintf(&b, " %d RETURN 0\n", line)
-		b.WriteString("End Function\n")
-		return b.String()
-	}
+	program := func(calls int) string { return cryptoBudgetECMulProgram(calls) }
 
 	run := func(calls int) error {
 		sc, _, err := ParseSmartContract(program(calls))
@@ -236,6 +219,103 @@ func TestCryptoBudgetEndToEndProgram(t *testing.T) {
 	}
 }
 
+// TestChainVersionFromHardFork pins the chain hard-fork -> DVM feature mapping.
+func TestChainVersionFromHardFork(t *testing.T) {
+	cases := []struct {
+		hardFork int64
+		want     string
+	}{
+		{0, "8.0.0"}, {1, "8.0.0"}, {2, "8.0.0"}, {3, "8.0.0"},
+		{4, "9.0.0"}, {5, "10.0.0"}, {6, "10.0.0"},
+	}
+	for _, c := range cases {
+		if got := ChainVersionFromHardFork(c.hardFork).String(); got != c.want {
+			t.Errorf("ChainVersionFromHardFork(%d) = %s, want %s", c.hardFork, got, c.want)
+		}
+	}
+}
+
+func mustPanic(t *testing.T, name string, fn func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Fatalf("%s: expected a panic", name)
+		}
+	}()
+	fn()
+}
+
+// TestChainVersionGatesIntrinsics: the chain gate is ANDed with the contract's
+// declared version, so a contract that declares v9 cannot use the intrinsics on
+// a chain that has not activated v9; cheap opcodes are unaffected.
+func TestChainVersionGatesIntrinsics(t *testing.T) {
+	state := &Shared_State{Chain_inputs: &Blockchain_Input{}}
+	state.EnableCryptoBudget()
+
+	callECMul := func() {
+		dvm := &DVM_Interpreter{Version: semver.MustParse("9.0.0"), State: state}
+		dvm.Handle_Internal_Function(&ast.CallExpr{Fun: &ast.Ident{Name: "ec_mul"},
+			Args: []ast.Expr{cbStrExpr(cbPointHex()), cbIntExpr(2)}}, "ec_mul")
+	}
+
+	// pre-v9 chain: the contract declaring 9.0.0 is NOT enough
+	state.ChainVersion = ChainVersionFromHardFork(3) // 8.0.0
+	mustPanic(t, "ec_mul on a pre-v9 chain", callECMul)
+
+	// v9 chain: allowed
+	state.ChainVersion = ChainVersionFromHardFork(4) // 9.0.0
+	callECMul()                                      // must not panic
+
+	// cheap opcodes are gated only by the contract version, not the chain
+	state.ChainVersion = ChainVersionFromHardFork(3)
+	sha := &DVM_Interpreter{Version: semver.MustParse("9.0.0"), State: state}
+	sha.Handle_Internal_Function(&ast.CallExpr{Fun: &ast.Ident{Name: "sha256"}, Args: []ast.Expr{cbStrExpr("abc")}}, "sha256") // must not panic
+}
+
+// TestChainVersionGatesEndToEnd: a fully in-budget v9 program must fail to run
+// on a pre-v9 chain and succeed once the chain activates v9.
+func TestChainVersionGatesEndToEnd(t *testing.T) {
+	point := cbPointHex()
+	under := int(CRYPTO_BUDGET_UNITS / CryptoCostECMul) // 8 EC_MUL calls
+
+	run := func(chainHF int64) error {
+		sc, _, err := ParseSmartContract(cryptoBudgetECMulProgram(under))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		state := cbState()
+		state.ChainVersion = ChainVersionFromHardFork(chainHF)
+		_, err = RunSmartContract(&sc, "TestRun", state, map[string]interface{}{"p": point})
+		return err
+	}
+
+	if err := run(3); err == nil {
+		t.Fatal("v9 program ran on a pre-v9 chain")
+	}
+	if err := run(4); err != nil {
+		t.Fatalf("v9 program should run on a v9 chain, got: %v", err)
+	}
+}
+
+// cryptoBudgetECMulProgram is a real DVM-BASIC program that declares v9 and
+// calls EC_MUL `calls` times. VERSION() is the only writer of dvm.Version, so
+// without the chain gate a contract could self-activate the intrinsics.
+func cryptoBudgetECMulProgram(calls int) string {
+	var b strings.Builder
+	b.WriteString("Function TestRun(p String) Uint64\n")
+	b.WriteString(" 10 dim r as String\n")
+	b.WriteString(" 20 dim v as Uint64\n")
+	b.WriteString(" 30 LET v = VERSION(\"9.0.0\")\n")
+	line := 40
+	for i := 0; i < calls; i++ {
+		fmt.Fprintf(&b, " %d LET r = EC_MUL(p, 2)\n", line)
+		line += 10
+	}
+	fmt.Fprintf(&b, " %d RETURN 0\n", line)
+	b.WriteString("End Function\n")
+	return b.String()
+}
+
 // cbAdaptorArgs builds a valid adaptor signature for the combination test.
 func cbAdaptorArgs(t *testing.T) []ast.Expr {
 	t.Helper()
@@ -248,7 +328,6 @@ func cbAdaptorArgs(t *testing.T) []ast.Expr {
 // Re-run with `go test -bench BenchmarkCryptoIntrinsic -run '^$'` before
 // changing any weight.
 // ---------------------------------------------------------------------------
-
 func cbBenchCall(b *testing.B, state *Shared_State, version, opcode string, args ...ast.Expr) {
 	b.Helper()
 	dvm := &DVM_Interpreter{Version: semver.MustParse(version), State: state}
