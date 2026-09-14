@@ -54,6 +54,7 @@ type func_data struct {
 	Range       semver.Range
 	ComputeCost int64
 	StorageCost int64
+	CryptoCost  int64 // weighted crypto-budget units, see crypto_budget.go
 	PtrU        DVM_FUNCTION_PTR_UINT64
 	PtrS        DVM_FUNCTION_PTR_STRING
 	Ptr         DVM_FUNCTION_PTR_ANY
@@ -112,14 +113,17 @@ func init() {
 		"strlen":    {{Range: semver.MustParseRange(">=0.0.0"), ComputeCost: 20000, StorageCost: 0, PtrU: dvm_strlen}},
 		"substr":    {{Range: semver.MustParseRange(">=0.0.0"), ComputeCost: 20000, StorageCost: 0, PtrS: dvm_substr}},
 		// Confidential Settlement & Auth (fork intrinsics)
-		"verify_sig":      {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 250000, StorageCost: 0, PtrU: dvm_verify_sig}},
-		"hash_to_point":   {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 30000, StorageCost: 0, PtrS: dvm_hash_to_point}},
-		"pedersen_commit": {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 45000, StorageCost: 0, PtrS: dvm_pedersen_commit}},
-		"verify_commit":   {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 45000, StorageCost: 0, PtrU: dvm_verify_commit}},
+		// CryptoCost = weighted crypto-budget units (crypto_budget.go); the
+		// EC/signature ops are metered separately from compute gas because
+		// gas cannot price them and sha256 at a consistent rate.
+		"verify_sig":      {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 250000, StorageCost: 0, CryptoCost: CryptoCostVerifySig, PtrU: dvm_verify_sig}},
+		"hash_to_point":   {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 30000, StorageCost: 0, CryptoCost: CryptoCostHashToPoint, PtrS: dvm_hash_to_point}},
+		"pedersen_commit": {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 45000, StorageCost: 0, CryptoCost: CryptoCostPedersen, PtrS: dvm_pedersen_commit}},
+		"verify_commit":   {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 45000, StorageCost: 0, CryptoCost: CryptoCostVerifyCommit, PtrU: dvm_verify_commit}},
 		"asset_balance":   {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 2000, StorageCost: 0, PtrU: dvm_asset_balance}},
-		"ec_add":          {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 15000, StorageCost: 0, PtrS: dvm_ec_add}},
-		"ec_mul":          {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 30000, StorageCost: 0, PtrS: dvm_ec_mul}},
-		"verify_adaptor":  {{Range: semver.MustParseRange(">=10.0.0"), ComputeCost: 250000, StorageCost: 0, PtrU: dvm_verify_adaptor}},
+		"ec_add":          {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 15000, StorageCost: 0, CryptoCost: CryptoCostECAdd, PtrS: dvm_ec_add}},
+		"ec_mul":          {{Range: semver.MustParseRange(">=9.0.0"), ComputeCost: 30000, StorageCost: 0, CryptoCost: CryptoCostECMul, PtrS: dvm_ec_mul}},
+		"verify_adaptor":  {{Range: semver.MustParseRange(">=10.0.0"), ComputeCost: 250000, StorageCost: 0, CryptoCost: CryptoCostVerifyAdaptor, PtrU: dvm_verify_adaptor}},
 	}
 }
 
@@ -130,6 +134,7 @@ func (dvm *DVM_Interpreter) Handle_Internal_Function(expr *ast.CallExpr, func_na
 		for _, f := range func_data_array {
 			if f.Range(dvm.Version) {
 				dvm.State.ConsumeGas(f.ComputeCost)
+				dvm.State.ConsumeCryptoBudget(f.CryptoCost)
 				if f.PtrU != nil {
 					return f.PtrU(dvm, expr)
 				} else if f.PtrS != nil {

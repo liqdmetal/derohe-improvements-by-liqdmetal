@@ -418,6 +418,10 @@ type Shared_State struct {
 	GasStoreLimit   int64
 	GasStoreCheck   bool // storage gas, bail out as soon as limit is breached
 
+	CryptoBudgetUsed  int64 // weighted count of expensive EC/signature intrinsics
+	CryptoBudgetLimit int64
+	CryptoBudgetCheck bool // if true, bail out as soon as crypto budget is breached
+
 	Chain_inputs *Blockchain_Input // all blockchain info is available here
 
 	Assets          map[crypto.Hash]uint64       // all assets supplied with this tx, including DERO main asset

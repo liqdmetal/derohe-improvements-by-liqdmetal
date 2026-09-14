@@ -240,6 +240,10 @@ func Execute_sc_function(w_sc_tree *Tree_Wrapper, data_tree *Tree_Wrapper, scid 
 		state.GasComputeCheck = true
 	}
 
+	// the expensive EC/signature intrinsics are capped separately from compute
+	// gas, see crypto_budget.go for the measurements behind the weights
+	state.EnableCryptoBudget()
+
 	// gas consumed in parameters to avoid tx bloats
 	if gasstorage_incoming > 0 {
 		if gasstorage_incoming > config.MAX_STORAGE_GAS_ATOMIC_UNITS {
