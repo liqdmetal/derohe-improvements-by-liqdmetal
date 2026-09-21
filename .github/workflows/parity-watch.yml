@@ -47,27 +47,22 @@ jobs:
           git fetch -q --no-tags upstream main:refs/upstream/main community-dev:refs/upstream/community-dev
           UP_MAIN=$(git rev-parse refs/upstream/main)
           UP_CDEV=$(git rev-parse refs/upstream/community-dev)
-          echo "up_main=$UP_MAIN" >> "$GITHUB_ENV"
-          echo "up_cdev=$UP_CDEV" >> "$GITHUB_ENV"
+          echo "UP_MAIN=$UP_MAIN" >> "$GITHUB_ENV"
+          echo "UP_CDEV=$UP_CDEV" >> "$GITHUB_ENV"
 
       - name: Compute parity (merge-base, both lines)
         id: parity
         run: |
           cd parity-repo
           git remote add fork "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags -v fork main:refs/forkmain
-          echo "forkmain=$(git rev-parse refs/forkmain)"
-          echo "upstream/main=$(git rev-parse refs/upstream/main)"
-          echo "upstream/community-dev=$(git rev-parse refs/upstream/community-dev)"
-          MB_MAIN=$(git merge-base refs/forkmain refs/upstream/main); RC1=$?
-          MB_CDEV=$(git merge-base refs/forkmain refs/upstream/community-dev); RC2=$?
-          echo "MB_MAIN=$MB_MAIN (exit $RC1)"
-          echo "MB_CDEV=$MB_CDEV (exit $RC2)"
-          if [ -z "$MB_MAIN" ]; then MB_MAIN=NONE; fi
-          if [ -z "$MB_CDEV" ]; then MB_CDEV=NONE; fi
-          git cat-file -t $(git rev-parse refs/forkmain) && git log --oneline -3 refs/forkmain
+          git fetch -q --no-tags fork main:refs/forkmain
+          MB_MAIN=$(git merge-base refs/forkmain refs/upstream/main || true)
+          MB_CDEV=$(git merge-base refs/forkmain refs/upstream/community-dev || true)
+          echo "MB_MAIN=${MB_MAIN:-NONE}"
+          echo "MB_CDEV=${MB_CDEV:-NONE}"
           if [ "$MB_MAIN" = "$UP_MAIN" ]; then MAIN_STATE="in-sync"; else MAIN_STATE="DRIFT"; fi
           if [ "$MB_CDEV" = "$UP_CDEV" ]; then CDEV_STATE="in-sync"; else CDEV_STATE="DRIFT"; fi
+          echo "verdict: MAIN_STATE=$MAIN_STATE CDEV_STATE=$CDEV_STATE"
           echo "main_state=$MAIN_STATE" >> "$GITHUB_OUTPUT"
           echo "cdev_state=$CDEV_STATE" >> "$GITHUB_OUTPUT"
           {
@@ -118,37 +113,44 @@ jobs:
             const q = 'repo:' + context.repo.owner + '/' + context.repo.repo +
                       ' is:issue is:open in:body "' + marker + '"';
 
-            const found = await github.paginate(github.rest.search.issuesAndPullRequests, {
-              q, per_page: 1,
-            });
-            const existing = found.find(i => !i.pull_request);
+            // Issue tracking is best-effort: some repos (e.g. forks) have
+            // Issues disabled (API returns 410). The red run above is the
+            // primary flag; this step must never break the signal.
+            try {
+              const found = await github.paginate(github.rest.search.issuesAndPullRequests, {
+                q, per_page: 1,
+              });
+              const existing = found.find(i => !i.pull_request);
 
-            if (drift || force) {
-              if (existing) {
+              if (drift || force) {
+                if (existing) {
+                  await github.rest.issues.update({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    issue_number: existing.number, body,
+                  });
+                  console.log('updated existing drift issue #' + existing.number);
+                } else {
+                  const made = await github.rest.issues.create({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    title: 'upstream-parity-watch: DEROFDN/derohe advanced past fork merge-base',
+                    body,
+                    labels: ['upstream-drift'],
+                  });
+                  console.log('opened drift issue #' + made.data.number);
+                }
+              } else if (existing) {
                 await github.rest.issues.update({
                   owner: context.repo.owner, repo: context.repo.repo,
-                  issue_number: existing.number, body,
-                });
-                console.log('updated existing drift issue #' + existing.number);
-              } else {
-                const made = await github.rest.issues.create({
-                  owner: context.repo.owner, repo: context.repo.repo,
-                  title: 'upstream-parity-watch: DEROFDN/derohe advanced past fork merge-base',
+                  issue_number: existing.number,
+                  state: 'closed',
                   body,
-                  labels: ['upstream-drift'],
                 });
-                console.log('opened drift issue #' + made.data.number);
+                console.log('parity restored; closed issue #' + existing.number);
+              } else {
+                console.log('in sync, no issue to manage');
               }
-            } else if (existing) {
-              await github.rest.issues.update({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: existing.number,
-                state: 'closed',
-                body,
-              });
-              console.log('parity restored; closed issue #' + existing.number);
-            } else {
-              console.log('in sync, no issue to manage');
+            } catch (e) {
+              core.warning('Issue tracking unavailable (run status above remains the flag): ' + e.message);
             }
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
