@@ -27,8 +27,10 @@ permissions:
   issues: write
 
 on:
-  schedule:
-    - cron: "23 6 * * *" # daily 06:23 UTC — off the hour, off the crowd
+  # Daily cron retired 2026-09-21: the sentinel moved to spore's
+  # .github/workflows/fork-parity-watch.yml (hosted where Actions is proven,
+  # watching this fork from outside). This workflow remains for manual,
+  # forks-side dispatch drills only.
   workflow_dispatch:
     inputs:
       force_flag:
