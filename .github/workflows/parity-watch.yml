@@ -55,9 +55,17 @@ jobs:
         run: |
           cd parity-repo
           git remote add fork "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch -q --no-tags fork main:refs/forkmain
-          MB_MAIN=$(git merge-base refs/forkmain refs/upstream/main || true)
-          MB_CDEV=$(git merge-base refs/forkmain refs/upstream/community-dev || true)
+          git fetch --no-tags -v fork main:refs/forkmain
+          echo "forkmain=$(git rev-parse refs/forkmain)"
+          echo "upstream/main=$(git rev-parse refs/upstream/main)"
+          echo "upstream/community-dev=$(git rev-parse refs/upstream/community-dev)"
+          MB_MAIN=$(git merge-base refs/forkmain refs/upstream/main); RC1=$?
+          MB_CDEV=$(git merge-base refs/forkmain refs/upstream/community-dev); RC2=$?
+          echo "MB_MAIN=$MB_MAIN (exit $RC1)"
+          echo "MB_CDEV=$MB_CDEV (exit $RC2)"
+          if [ -z "$MB_MAIN" ]; then MB_MAIN=NONE; fi
+          if [ -z "$MB_CDEV" ]; then MB_CDEV=NONE; fi
+          git cat-file -t $(git rev-parse refs/forkmain) && git log --oneline -3 refs/forkmain
           if [ "$MB_MAIN" = "$UP_MAIN" ]; then MAIN_STATE="in-sync"; else MAIN_STATE="DRIFT"; fi
           if [ "$MB_CDEV" = "$UP_CDEV" ]; then CDEV_STATE="in-sync"; else CDEV_STATE="DRIFT"; fi
           echo "main_state=$MAIN_STATE" >> "$GITHUB_OUTPUT"
