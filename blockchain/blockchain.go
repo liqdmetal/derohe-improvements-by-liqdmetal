@@ -516,6 +516,21 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 		return errormsg.ErrInvalidBlock, false
 	}
 
+	// hard fork 4 will not allow any block to be mined with tips older than stable limit
+	// a block which extends the chain height rewrites the topo history back to the common point (see "fixed loop" below)
+	// make sure this rewind never goes deeper than the stable limit
+	if bl.Height >= uint64(globals.Config.MAJOR_HF4_HEIGHT) {
+		if block_height > chain.Get_Height() && len(bl.Tips) == 1 {
+			if depth, err := chain.calculate_rewind_depth(bl.Tips[0], block_height-1); err != nil {
+				block_logger.Error(err, "Block rejected, rewind depth cannot be determined")
+				return errormsg.ErrInvalidBlock, false
+			} else if depth > config.STABLE_LIMIT {
+				block_logger.Error(fmt.Errorf("Block rejected since it would rewind stable chain"), "", "rewind_depth", depth, "stable_limit", config.STABLE_LIMIT)
+				return errormsg.ErrInvalidBlock, false
+			}
+		}
+	}
+
 	//if block_height != 0 && block_height < chain.Get_Stable_Height() {
 	//	block_logger.Error(fmt.Errorf("Block rejected since it is stale."), "", "stable height", chain.Get_Stable_Height(), "block height", block_height)
 	//	return errormsg.ErrInvalidBlock, false
@@ -710,6 +725,10 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 
 				tx_hash := cbl.Txs[i].GetHash()
 				if chain.simulator == false && tx_hash[0] != 0 && tx_hash[1] != 0 {
+					// hard fork 4: check first 3 bytes of txid
+					if bl.Height >= uint64(globals.Config.MAJOR_HF4_HEIGHT) && tx_hash[2] != 0 {
+						return fmt.Errorf("Registration TX has not solved PoW"), false
+					}
 					return fmt.Errorf("Registration TX has not solved PoW"), false
 				}
 
@@ -1351,6 +1370,12 @@ func (chain *Blockchain) Add_TX_To_Pool(tx *transaction.Transaction) error {
 		return fmt.Errorf("Incoming TX %s could not be verified, err %s", txhash, err)
 	}
 
+	if tx.TransactionType == transaction.SC_TX {
+		if err := chain.precheck_SC_TX(tx); err != nil {
+			return err
+		}
+	}
+
 	if chain.Mempool.Mempool_Add_TX(tx, 0) { // new tx come with 0 marker
 		//rlog.Tracef(2, "Successfully added tx %s to pool", txhash)
 		return nil
@@ -1359,6 +1384,86 @@ func (chain *Blockchain) Add_TX_To_Pool(tx *transaction.Transaction) error {
 		return fmt.Errorf("TX %s rejected by pool by mempool", txhash)
 	}
 
+}
+
+// precheck_SC_TX dry-runs an SC_CALL against the current state to catch obvious failures early.
+// Users lose fees when SC calls fail, so rejecting known-bad calls before pool admission saves them.
+// On any state-loading error the check is skipped and the TX is allowed through.
+func (chain *Blockchain) precheck_SC_TX(tx *transaction.Transaction) error {
+	if !tx.SCDATA.Has(rpc.SCACTION, rpc.DataUint64) {
+		return nil
+	}
+	if rpc.SC_ACTION(tx.SCDATA.Value(rpc.SCACTION, rpc.DataUint64).(uint64)) != rpc.SC_CALL {
+		return nil // SC_INSTALL parse errors are caught by block validation
+	}
+
+	ss, err := chain.Store.Balance_store.LoadSnapshot(0)
+	if err != nil {
+		return nil
+	}
+	balance_tree, err := ss.GetTree(config.BALANCE_TREE)
+	if err != nil {
+		return nil
+	}
+	sc_meta, err := ss.GetTree(config.SC_META)
+	if err != nil {
+		return nil
+	}
+
+	sc_change_cache := map[crypto.Hash]*graviton.Tree{}
+	if tx.SCDATA.Has(rpc.SCID, rpc.DataHash) {
+		scid := tx.SCDATA.Value(rpc.SCID, rpc.DataHash).(crypto.Hash)
+		if tree, err2 := ss.GetTree(string(scid[:])); err2 == nil {
+			sc_change_cache[scid] = tree
+		}
+	}
+	for t := range tx.Payloads {
+		if !tx.Payloads[t].SCID.IsZero() {
+			if _, ok := sc_change_cache[tx.Payloads[t].SCID]; !ok {
+				if tree, err2 := ss.GetTree(string(tx.Payloads[t].SCID[:])); err2 == nil {
+					sc_change_cache[tx.Payloads[t].SCID] = tree
+				}
+			}
+		}
+	}
+
+	chain_height := uint64(chain.Get_Height())
+	topo_height := uint64(chain.Load_TOPO_HEIGHT())
+	timestamp := uint64(globals.Time().UTC().Unix())
+	top_id := chain.Get_Top_ID()
+
+	if _, err = chain.process_transaction_sc(sc_change_cache, ss, chain_height, topo_height, timestamp, top_id, *tx, balance_tree, sc_meta); err != nil {
+		return fmt.Errorf("SC precheck failed: %s", err)
+	}
+	return nil
+}
+
+// calculate_rewind_depth returns the number of existing topo entries which would be overwritten,
+// if a block with the given tip (at tip_height) becomes the new top of the chain
+// it follows the same path as the "fixed loop" in Add_Complete_Block, but only reads
+// the walk stops early once the depth exceeds STABLE_LIMIT
+func (chain *Blockchain) calculate_rewind_depth(tip crypto.Hash, tip_height int64) (int64, error) {
+	cur := tip
+	for depth, pos := int64(0), tip_height; ; depth, pos = depth+1, pos-1 {
+		if pos < 0 {
+			return depth, fmt.Errorf("no common point found with main chain")
+		}
+		if r, err := chain.Store.Topo_store.Read(pos); err == nil && r.BLOCK_ID == cur {
+			return depth, nil // reached a common point
+		}
+		if depth > config.STABLE_LIMIT {
+			return depth, nil // already too deep, no need to walk further
+		}
+
+		bl, err := chain.Load_BL_FROM_ID(cur)
+		if err != nil {
+			return depth, err
+		}
+		if len(bl.Tips) < 1 {
+			return depth, fmt.Errorf("reached genesis without common point")
+		}
+		cur = bl.Tips[0]
+	}
 }
 
 // side blocks are blocks which lost the race the to become part
