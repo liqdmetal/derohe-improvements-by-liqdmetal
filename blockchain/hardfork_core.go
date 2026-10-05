@@ -50,7 +50,7 @@ var mainnet_hard_forks = []Hard_fork{
 	// version 1 has difficulty hardcoded to 1
 	{2, config.Mainnet.MAJOR_HF2_HEIGHT, 0, 0, 0, true}, // version 2 hard fork where PoW gets changed
 	{3, config.Mainnet.MAJOR_HF3_HEIGHT, 0, 0, 0, true}, // version 3 hard fork where add/change consensus rules
-	//    {3, 721000, 0, 0, 0, true}, // version 3 hard fork emission fix, it's mandatory
+	{4, config.Mainnet.MAJOR_HF4_HEIGHT, 0, 0, 0, true}, // version 4 hard fork where add/change consensus rules
 }
 
 // current testnet_hard_forks
@@ -58,7 +58,7 @@ var testnet_hard_forks = []Hard_fork{
 	{1, 0, 0, 0, 0, true},                               // version 1 hard fork where genesis block landed
 	{2, config.Testnet.MAJOR_HF2_HEIGHT, 0, 0, 0, true}, // version 2 hard fork where PoW gets changed
 	{3, config.Testnet.MAJOR_HF3_HEIGHT, 0, 0, 0, true}, // version 3 hard fork where add/change consensus rules
-	//{3, 0, 0, 0, 0, true}, // version 3 hard fork where we started , it's mandatory
+	{4, config.Testnet.MAJOR_HF4_HEIGHT, 0, 0, 0, true}, // version 3 hard fork where add/change consensus rules
 	//{4, 3, 0, 0, 0, true}, // version 4 hard fork where we change mining algorithm it's mandatory
 }
 
