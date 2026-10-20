@@ -367,6 +367,25 @@ func (chain *Blockchain) Shutdown() {
 	logger.Info("Stopped Blockchain")
 }
 
+// hf4ActiveAtHeight treats a negative activation height as explicitly unscheduled.
+func hf4ActiveAtHeight(height uint64, activationHeight int64) bool {
+	return activationHeight >= 0 && height >= uint64(activationHeight)
+}
+
+// registrationPoWValid preserves the legacy pre-HF4 rule and applies the
+// three-leading-zero-byte rule only at/after the configured HF4 activation.
+func registrationPoWValid(hash crypto.Hash, height uint64, activationHeight int64, simulator bool) bool {
+	if simulator {
+		return true
+	}
+	if hf4ActiveAtHeight(height, activationHeight) {
+		return hash[0] == 0 && hash[1] == 0 && hash[2] == 0
+	}
+	// This is the exact legacy block-validation predicate: accept if either
+	// of the first two bytes is zero. Do not retroactively change old blocks.
+	return hash[0] == 0 || hash[1] == 0
+}
+
 // this is the only entrypoint for new / old blocks even for genesis block
 // this will add the entire block atomically to the chain
 // this is the only function which can add blocks to the chain
@@ -519,7 +538,7 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 	// hard fork 4 will not allow any block to be mined with tips older than stable limit
 	// a block which extends the chain height rewrites the topo history back to the common point (see "fixed loop" below)
 	// make sure this rewind never goes deeper than the stable limit
-	if bl.Height >= uint64(globals.Config.MAJOR_HF4_HEIGHT) {
+	if hf4ActiveAtHeight(bl.Height, globals.Config.MAJOR_HF4_HEIGHT) {
 		if block_height > chain.Get_Height() && len(bl.Tips) == 1 {
 			if depth, err := chain.calculate_rewind_depth(bl.Tips[0], block_height-1); err != nil {
 				block_logger.Error(err, "Block rejected, rewind depth cannot be determined")
@@ -724,11 +743,7 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 				}
 
 				tx_hash := cbl.Txs[i].GetHash()
-				if chain.simulator == false && tx_hash[0] != 0 && tx_hash[1] != 0 {
-					// hard fork 4: check first 3 bytes of txid
-					if bl.Height >= uint64(globals.Config.MAJOR_HF4_HEIGHT) && tx_hash[2] != 0 {
-						return fmt.Errorf("Registration TX has not solved PoW"), false
-					}
+				if !registrationPoWValid(tx_hash, bl.Height, globals.Config.MAJOR_HF4_HEIGHT, chain.simulator) {
 					return fmt.Errorf("Registration TX has not solved PoW"), false
 				}
 
@@ -1027,14 +1042,23 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 							}
 						}
 					}
+					// Consensus-check the migration payload before process_transaction spends its source input.
+					if migrationErr := validateSeamlessMigrationCall(tx, bl_current.Height, balance_tree); migrationErr != nil {
+						block_logger.Error(migrationErr, "invalid seamless migration transaction", "txid", txhash)
+						return errormsg.ErrInvalidTX, false
+					}
+
 					// we have loaded a tx successfully, now lets execute it
 					tx_fees := chain.process_transaction(sc_change_cache, tx, balance_tree, bl_current.Height)
 
 					//fmt.Printf("transaction %s type %s data %+v\n", txhash, tx.TransactionType, tx.SCDATA)
 					if tx.TransactionType == transaction.SC_TX {
 						tx_fees, err = chain.process_transaction_sc(sc_change_cache, ss, bl_current.Height, uint64(current_topo_block), bl_current.Timestamp/1000, bl_current_hash, tx, balance_tree, sc_meta)
-
 						//fmt.Printf("Processsing sc err %s\n", err)
+						if err != nil && isSeamlessMigrationCall(tx) {
+							block_logger.Error(err, "SC transaction execution returned error", "txid", txhash)
+							return errormsg.ErrInvalidTX, false
+						}
 						if err == nil { // TODO process gasg here
 
 						}
@@ -1427,7 +1451,23 @@ func (chain *Blockchain) precheck_SC_TX(tx *transaction.Transaction) error {
 		}
 	}
 
-	chain_height := uint64(chain.Get_Height())
+	currentHeight := chain.Get_Height()
+	candidateHeight := uint64(0)
+	if currentHeight >= 0 {
+		candidateHeight = uint64(currentHeight + 1)
+	}
+	if err = validateSeamlessMigrationCall(*tx, candidateHeight, balance_tree); err != nil {
+		return fmt.Errorf("migration precheck failed: %w", err)
+	}
+	if isSeamlessMigrationCall(*tx) {
+		if activationHeight, scheduled := seamlessMigrationActivationHeight(); scheduled && candidateHeight == activationHeight {
+			// HF4 installs the hardcoded contract before executing this block's transactions.
+			// It is intentionally absent from the parent snapshot used by mempool precheck.
+			return nil
+		}
+	}
+
+	chain_height := uint64(currentHeight)
 	topo_height := uint64(chain.Load_TOPO_HEIGHT())
 	timestamp := uint64(globals.Time().UTC().Unix())
 	top_id := chain.Get_Top_ID()
