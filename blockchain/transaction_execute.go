@@ -402,12 +402,21 @@ func (chain *Blockchain) process_transaction_sc(cache map[crypto.Hash]*graviton.
 	// we must commit all the changes
 	// check whether we are not overflowing/underflowing, means SC is not over sending
 	if err == nil {
-		err = dvm.SanityCheckExternalTransfers(w_sc_data_tree, balance_tree, scid)
+		if scid == rpc.SeamlessMigrationSCID() {
+			err = dvm.SanityCheckNoExternalTransfers(w_sc_data_tree)
+		} else {
+			err = dvm.SanityCheckExternalTransfers(w_sc_data_tree, balance_tree, scid)
+		}
 	}
 
 	if err != nil { // error occured, give everything to SC, since we may not have information to send them back
 		if chain.simulator {
 			logger.Error(err, "error executing sc", "txid", txhash)
+		}
+
+		if scid == rpc.SeamlessMigrationSCID() {
+			// Migration calls have no public-value refund path; reject them instead.
+			return
 		}
 
 		if signer, err1 := Extract_signer(&tx); err1 == nil { // if we can identify sender, return funds to him

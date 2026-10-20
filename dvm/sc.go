@@ -245,6 +245,10 @@ func Execute_sc_function(w_sc_tree *Tree_Wrapper, data_tree *Tree_Wrapper, scid 
 	for asset, value := range incoming_value {
 		var new_value [8]byte
 		stored_value, _ := LoadSCAssetValue(data_tree, scid, asset)
+		if scid == rpc.SeamlessMigrationSCID() && value > ^uint64(0)-stored_value {
+			err = fmt.Errorf("migration balance overflow")
+			return
+		}
 		binary.BigEndian.PutUint64(new_value[:], stored_value+value)
 		StoreSCValue(data_tree, scid, asset[:], new_value[:])
 		state.Assets[asset] += value
