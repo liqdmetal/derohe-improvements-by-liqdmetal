@@ -680,6 +680,10 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 		}
 
 		for i, tx := range cbl.Txs {
+			if tx == nil {
+				block_logger.Error(fmt.Errorf("nil TX body"), "Incomplete block", "index", i)
+				return errormsg.ErrInvalidBlock, false
+			}
 			if tx.Height >= bl.Height {
 				block_logger.Error(fmt.Errorf("Invalid TX Height"), "TX height cannot be more than block", "txid", cbl.Txs[i].GetHash().String())
 				return errormsg.ErrInvalidBlock, false
@@ -688,21 +692,46 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 
 		// now lets loop through complete block, matching each tx
 		// detecting any duplicates using txid hash
-		for i := 0; i < len(cbl.Txs); i++ {
-			tx_hash := cbl.Txs[i].GetHash()
+		for i, tx := range cbl.Txs {
+			if tx == nil {
+				block_logger.Error(fmt.Errorf("nil TX body"), "Incomplete block", "index", i)
+				return errormsg.ErrInvalidBlock, false
+			}
+			tx_hash := tx.GetHash()
+			if bl.Tx_hashes[i] != tx_hash {
+				block_logger.Error(fmt.Errorf("TX body/hash order mismatch"), "Incomplete block", "index", i, "listed_txid", bl.Tx_hashes[i], "body_txid", tx_hash)
+				return errormsg.ErrInvalidBlock, false
+			}
 			if _, ok := tx_checklist[tx_hash]; !ok {
 				// tx is NOT found in map, RED alert reject the block
 				block_logger.Error(fmt.Errorf("Missing TX"), "TX missing", "txid", tx_hash.String())
 				return errormsg.ErrInvalidBlock, false
 			}
-			// Hark-Fork 3: check if TX is already stored
-			if bl.Height >= uint64(globals.Config.MAJOR_HF3_HEIGHT) {
-				if tx_data, err := chain.Store.Block_tx_store.ReadTX(tx_hash); err == nil {
-					if !bytes.Equal(tx_data, cbl.Txs[i].Serialize()) {
+
+			// Preserve the legacy duplicate-body guard through v3. V4 binds the
+			// exact body into the block ID and stores it per block instead.
+			if hf3ActiveAtHeight(bl.Height) && bl.Major_Version < 4 {
+				tx_data, readErr := chain.Store.Block_tx_store.ReadTX(tx_hash)
+				if readErr == nil {
+					if !bytes.Equal(tx_data, tx.Serialize()) {
 						block_logger.Error(fmt.Errorf("TX data mismatch"), "Duplicate TX", "txid", tx_hash.String())
 						return errormsg.ErrInvalidBlock, false
 					}
+				} else if !os.IsNotExist(readErr) {
+					block_logger.Error(readErr, "stored TX cannot be read; rejecting block", "txid", tx_hash.String())
+					return errormsg.ErrInvalidBlock, false
 				}
+			}
+		}
+
+		if bl.Major_Version >= 4 {
+			serializedTransactions := make([][]byte, len(cbl.Txs))
+			for i, tx := range cbl.Txs {
+				serializedTransactions[i] = tx.Serialize()
+			}
+			if block.SerializedTransactionsCommitment(serializedTransactions) != bl.Proof {
+				block_logger.Error(fmt.Errorf("v4 transaction-body commitment mismatch"), "rejecting block", "height", bl.Height)
+				return errormsg.ErrInvalidBlock, false
 			}
 		}
 	}
@@ -857,7 +886,7 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 				if atomic.LoadInt32(&fail_count) >= 1 { // fail fast
 					return
 				}
-				if err := chain.Verify_Transaction_NonCoinbase_CheckNonce_Tips(hf_version, cbl.Txs[j], bl.Tips); err != nil { // transaction verification failed
+				if err := chain.Verify_Transaction_NonCoinbase_CheckNonce_TipsAtHeight(hf_version, cbl.Txs[j], bl.Tips, bl.Height); err != nil { // transaction verification failed
 					atomic.AddInt32(&fail_count, 1) // increase fail count by 1
 					block_logger.Error(err, "tx nonce verification failed", "txid", cbl.Txs[j].GetHash())
 				}
@@ -889,7 +918,7 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 				if atomic.LoadInt32(&fail_count) >= 1 { // fail fast
 					return
 				}
-				if err := chain.Verify_Transaction_NonCoinbase(cbl.Txs[j]); err != nil { // transaction verification failed
+				if err := chain.Verify_Transaction_NonCoinbaseAtHeight(cbl.Txs[j], bl.Height); err != nil { // transaction verification failed
 					atomic.AddInt32(&fail_count, 1) // increase fail count by 1
 					block_logger.Error(err, "tx verification failed", "txid", cbl.Txs[j].GetHash())
 				}
@@ -940,9 +969,15 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 
 	// save all the txs
 	// and then save the block
-	{ // first lets save all the txs, together with their link to this block as height
+	{ // save the body by transaction ID and, from v4 onward, by block/index
 		for i := 0; i < len(cbl.Txs); i++ {
-			if err = chain.Store.Block_tx_store.WriteTX(bl.Tx_hashes[i], cbl.Txs[i].Serialize()); err != nil {
+			serializedTX := cbl.Txs[i].Serialize()
+			if bl.Major_Version >= 4 {
+				if err = chain.Store.Block_tx_store.WriteTXForBlock(block_hash, uint64(i), serializedTX); err != nil {
+					panic(err)
+				}
+			}
+			if err = chain.Store.Block_tx_store.WriteTX(bl.Tx_hashes[i], serializedTX); err != nil {
 				panic(err)
 			}
 		}
@@ -1026,45 +1061,52 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 				panic(err)
 			}
 
-			for _, txhash := range bl_current.Tx_hashes { // execute all the transactions
-				if tx_bytes, err := chain.Store.Block_tx_store.ReadTX(txhash); err != nil {
-					panic(err)
-				} else {
-					var tx transaction.Transaction
-					if err = tx.Deserialize(tx_bytes); err != nil {
-						panic(err)
-					}
-					for t := range tx.Payloads {
-						if !tx.Payloads[t].SCID.IsZero() {
-							if _, ok := sc_change_cache[tx.Payloads[t].SCID]; !ok || bl_current.Height < uint64(globals.Config.MAJOR_HF3_HEIGHT) {
-								tree, _ := ss.GetTree(string(tx.Payloads[t].SCID[:]))
-								sc_change_cache[tx.Payloads[t].SCID] = tree
-							}
+			completeBlock, loadErr := chain.Load_Complete_Block(bl_current_hash)
+			if loadErr != nil {
+				panic(loadErr)
+			}
+			if len(completeBlock.Txs) != len(bl_current.Tx_hashes) {
+				panic(fmt.Errorf("stored block transaction count mismatch"))
+			}
+
+			for txIndex, txPointer := range completeBlock.Txs { // execute the exact bodies committed by this block
+				txhash := bl_current.Tx_hashes[txIndex]
+				if txPointer == nil {
+					panic(fmt.Errorf("nil stored transaction body at index %d", txIndex))
+				}
+				tx := *txPointer
+				if tx.GetHash() != txhash {
+					panic(fmt.Errorf("stored transaction ID mismatch at index %d", txIndex))
+				}
+				for t := range tx.Payloads {
+					if !tx.Payloads[t].SCID.IsZero() {
+						if _, ok := sc_change_cache[tx.Payloads[t].SCID]; !ok || bl_current.Height < uint64(globals.Config.MAJOR_HF3_HEIGHT) {
+							tree, _ := ss.GetTree(string(tx.Payloads[t].SCID[:]))
+							sc_change_cache[tx.Payloads[t].SCID] = tree
 						}
 					}
-					// Consensus-check the migration payload before process_transaction spends its source input.
-					if migrationErr := validateSeamlessMigrationCall(tx, bl_current.Height, balance_tree); migrationErr != nil {
-						block_logger.Error(migrationErr, "invalid seamless migration transaction", "txid", txhash)
-						return errormsg.ErrInvalidTX, false
-					}
+				}
+				// Consensus-check the migration payload before process_transaction spends its source input.
+				if migrationErr := validateSeamlessMigrationCall(tx, bl_current.Height, balance_tree); migrationErr != nil {
+					block_logger.Error(migrationErr, "invalid seamless migration transaction", "txid", txhash)
+					return errormsg.ErrInvalidTX, false
+				}
 
-					// we have loaded a tx successfully, now lets execute it
-					tx_fees := chain.process_transaction(sc_change_cache, tx, balance_tree, bl_current.Height)
+				// we have loaded a tx successfully, now lets execute it
+				tx_fees := chain.process_transaction(sc_change_cache, tx, balance_tree, bl_current.Height)
 
-					//fmt.Printf("transaction %s type %s data %+v\n", txhash, tx.TransactionType, tx.SCDATA)
-					if tx.TransactionType == transaction.SC_TX {
-						tx_fees, err = chain.process_transaction_sc(sc_change_cache, ss, bl_current.Height, uint64(current_topo_block), bl_current.Timestamp/1000, bl_current_hash, tx, balance_tree, sc_meta)
-						//fmt.Printf("Processsing sc err %s\n", err)
-						if err != nil && isSeamlessMigrationCall(tx) {
-							block_logger.Error(err, "SC transaction execution returned error", "txid", txhash)
+				//fmt.Printf("transaction %s type %s data %+v\n", txhash, tx.TransactionType, tx.SCDATA)
+				if tx.TransactionType == transaction.SC_TX {
+					var scErr error
+					tx_fees, scErr = chain.process_transaction_sc(sc_change_cache, ss, bl_current.Height, uint64(current_topo_block), bl_current.Timestamp/1000, bl_current_hash, tx, balance_tree, sc_meta)
+					if scErr != nil {
+						block_logger.Error(scErr, "SC transaction execution returned error", "txid", txhash)
+						if isSeamlessMigrationCall(tx) {
 							return errormsg.ErrInvalidTX, false
 						}
-						if err == nil { // TODO process gasg here
-
-						}
 					}
-					fees_collected += tx_fees
 				}
+				fees_collected += tx_fees
 			}
 
 			// at this point, we must commit all the SCs, so entire tree hash is interlinked
