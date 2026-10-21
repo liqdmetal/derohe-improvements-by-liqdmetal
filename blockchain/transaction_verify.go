@@ -71,6 +71,10 @@ func (chain *Blockchain) Verify_Transaction_Coinbase(cbl *block.Complete_Block, 
 
 // this checks the nonces of a tx agains the current chain state, this basically does a comparision of state trees in limited form
 func (chain *Blockchain) Verify_Transaction_NonCoinbase_CheckNonce_Tips(hf_version int64, tx *transaction.Transaction, tips []crypto.Hash) (err error) {
+	return chain.Verify_Transaction_NonCoinbase_CheckNonce_TipsAtHeight(hf_version, tx, tips, nextCandidateHeight(chain))
+}
+
+func (chain *Blockchain) Verify_Transaction_NonCoinbase_CheckNonce_TipsAtHeight(hf_version int64, tx *transaction.Transaction, tips []crypto.Hash, validationHeight uint64) (err error) {
 	var tx_hash crypto.Hash
 	defer func() { // safety so if anything wrong happens, verification fails
 		if r := recover(); r != nil {
@@ -88,7 +92,8 @@ func (chain *Blockchain) Verify_Transaction_NonCoinbase_CheckNonce_Tips(hf_versi
 		return fmt.Errorf("no tips provided, cannot verify")
 	}
 
-	tips_string := tx_hash.String()
+	cache_tx_hash := transactionValidationCacheKey(tx, validationHeight)
+	tips_string := cache_tx_hash.String()
 	for _, tip := range tips {
 		tips_string += fmt.Sprintf("%s", tip.String())
 	}
@@ -237,10 +242,18 @@ func k0SCInstallRing2Reject(tx *transaction.Transaction) error {
 }
 
 func (chain *Blockchain) Verify_Transaction_NonCoinbase(tx *transaction.Transaction) (err error) {
-	return chain.verify_Transaction_NonCoinbase_internal(false, tx)
+	return chain.Verify_Transaction_NonCoinbaseAtHeight(tx, nextCandidateHeight(chain))
+}
+
+func (chain *Blockchain) Verify_Transaction_NonCoinbaseAtHeight(tx *transaction.Transaction, validationHeight uint64) (err error) {
+	return chain.verify_Transaction_NonCoinbase_internal(false, tx, validationHeight)
 }
 func (chain *Blockchain) Expand_Transaction_NonCoinbase(tx *transaction.Transaction) (err error) {
-	return chain.verify_Transaction_NonCoinbase_internal(true, tx)
+	return chain.Expand_Transaction_NonCoinbaseAtHeight(tx, nextCandidateHeight(chain))
+}
+
+func (chain *Blockchain) Expand_Transaction_NonCoinbaseAtHeight(tx *transaction.Transaction, validationHeight uint64) (err error) {
+	return chain.verify_Transaction_NonCoinbase_internal(true, tx, validationHeight)
 }
 
 // all non miner tx must be non-coinbase tx
@@ -250,7 +263,7 @@ func (chain *Blockchain) Expand_Transaction_NonCoinbase(tx *transaction.Transact
 // if the transaction has passed the check it can be added to mempool, relayed or added to blockchain
 // the transaction has already been deserialized thats it
 // It also expands the transactions, using the repective state trie
-func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool, tx *transaction.Transaction) (err error) {
+func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool, tx *transaction.Transaction, validationHeight uint64) (err error) {
 
 	var tx_hash crypto.Hash
 	defer func() { // safety so if anything wrong happens, verification fails
@@ -265,14 +278,18 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 	}
 
 	tx_hash = tx.GetHash()
+	tx_cache := transactionValidationCacheKey(tx, validationHeight)
 
-	// apply HF3 fixes: add TX to cache
-	if t, ok := HF3_Affected_Txs[tx_hash.String()]; ok {
-		transaction_valid_cache.Store(tx_hash, time.Now())
+	// Preserve the legacy HF3 exceptions only while validating pre-HF3 blocks.
+	// They must never seed a proofless cache entry after the fork.
+	if !hf3ActiveAtHeight(validationHeight) {
+		if t, ok := HF3_Affected_Txs[tx_hash.String()]; ok && t != nil {
+			transaction_valid_cache.Store(tx_hash, time.Now())
 
-		tips_string := tx_hash.String()
-		tips_string += fmt.Sprintf("%s", t.Bl_Tips)
-		chain.cache_IsNonceValidTips.Add(tips_string, true)
+			tips_string := tx_hash.String()
+			tips_string += fmt.Sprintf("%s", t.Bl_Tips)
+			chain.cache_IsNonceValidTips.Add(tips_string, true)
+		}
 	}
 
 	if tx.TransactionType == transaction.REGISTRATION {
@@ -345,12 +362,9 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 		// the privacy floor is 4. SC_TX / coinbase / registration / premine
 		// exempt until the verify_sig migration (K0 Fix C).
 		//
-		// HARDENING (wargame): the floor must key off the CURRENT chain height
-		// at verification time, NOT tx.Height. tx.Height is attacker-settable
-		// (walletapi/transaction_build.go:37) and TX_VALIDITY_HEIGHT=11 lets a
-		// tx reference a block up to 11 back — so right after the floor
-		// activates, a ring-2 NORMAL tx pinned to a pre-fork block would dodge
-		// the gate. Keying off the chain tip closes that window.
+		// The floor is keyed to the candidate block's validated height, never
+		// tx.Height (an attacker-controlled reference height) or a stale tip.
+		// Mempool callers pass tip+1; block validation passes the block height.
 		//
 		// HARDENING 2 (wargame): an "SC_TX" with no SCACTION in SCDATA is not
 		// invoking any contract — process_transaction_sc returns immediately
@@ -364,7 +378,7 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 		if txtype == transaction.SC_TX && !tx.SCDATA.Has(rpc.SCACTION, rpc.DataUint64) {
 			txtype = transaction.NORMAL // SC_TX-without-an-action is a NORMAL tx in disguise
 		}
-		if k0RingSizeFloorReject(uint64(chain.Get_Height()), txtype, tx.Payloads[t].Statement.RingSize) {
+		if k0RingSizeFloorReject(validationHeight, txtype, tx.Payloads[t].Statement.RingSize) {
 			return fmt.Errorf("K0: ringsize %d < 4 rejected for NORMAL/BURN txs from height %d (privacy floor; use ringsize >= 4)",
 				tx.Payloads[t].Statement.RingSize, globals.Config.K0_MIN_RING4_HEIGHT)
 		}
@@ -538,11 +552,6 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 			tree.Put(key_compressed, nb.Serialize()) // reserialize and store temporarily, tree will be discarded after verification
 
 		}
-	}
-
-	tx_cache := tx_hash
-	if tx.Height >= uint64(globals.Config.MAJOR_HF3_HEIGHT) {
-		tx_cache = crypto.Keccak256(tx.Serialize())
 	}
 
 	if _, ok := transaction_valid_cache.Load(tx_cache); ok {
