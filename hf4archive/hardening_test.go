@@ -341,6 +341,50 @@ func TestCollectionCommandCredentialsRejected(t *testing.T) {
 	}
 }
 
+func TestProtocolRelativeEndpointRejected(t *testing.T) {
+	dir := t.TempDir()
+	in := defaultInput()
+	approved, anchor := writeBundle(t, dir, in)
+	manifest := loadManifest(t, dir)
+	manifest.Endpoint = "//127.0.0.1/archive"
+	resignManifest(t, dir, manifest, in.seed)
+	if _, err := OpenBundle(dir, approved, testNetwork, anchor); err == nil || !strings.Contains(err.Error(), "absolute URL") {
+		t.Fatalf("expected protocol-relative failure, got %v", err)
+	}
+}
+
+func TestHostPortLoopbackEndpointRejected(t *testing.T) {
+	dir := t.TempDir()
+	in := defaultInput()
+	approved, anchor := writeBundle(t, dir, in)
+	manifest := loadManifest(t, dir)
+	manifest.Endpoint = "localhost:8080"
+	resignManifest(t, dir, manifest, in.seed)
+	if _, err := OpenBundle(dir, approved, testNetwork, anchor); err == nil || !strings.Contains(err.Error(), "private or internal") {
+		t.Fatalf("expected host:port failure, got %v", err)
+	}
+}
+
+func TestNumericEndpointFormsRejected(t *testing.T) {
+	for _, endpoint := range []string{
+		"http://2130706433/archive",
+		"http://127.1/archive",
+		"http://0x7f000001/archive",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			dir := t.TempDir()
+			in := defaultInput()
+			approved, anchor := writeBundle(t, dir, in)
+			manifest := loadManifest(t, dir)
+			manifest.Endpoint = endpoint
+			resignManifest(t, dir, manifest, in.seed)
+			if _, err := OpenBundle(dir, approved, testNetwork, anchor); err == nil || !strings.Contains(err.Error(), "private or internal") {
+				t.Fatalf("expected numeric endpoint failure, got %v", err)
+			}
+		})
+	}
+}
+
 func TestIPv6LoopbackEndpointRejected(t *testing.T) {
 	dir := t.TempDir()
 	in := defaultInput()

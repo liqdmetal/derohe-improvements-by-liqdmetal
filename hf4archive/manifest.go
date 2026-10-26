@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -36,7 +37,10 @@ const (
 	MaxBodyHexSize         = (64 << 20) + 2
 )
 
-var archiveIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+var (
+	archiveIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	numericHost       = regexp.MustCompile(`^[0-9.]+$`)
+)
 
 // Manifest is the canonical, signed description of one archive bundle. Field
 // order is part of the schema: canonical JSON is Go's compact marshal output
@@ -237,12 +241,15 @@ func validateEndpointLabel(text string) error {
 	if trimmed == "" {
 		return fmt.Errorf("endpoint is empty")
 	}
+	if strings.HasPrefix(trimmed, "//") {
+		return fmt.Errorf("endpoint must be an absolute URL or a label")
+	}
 	if strings.Contains(trimmed, "://") {
 		parsed, err := url.Parse(trimmed)
 		if err != nil {
 			return fmt.Errorf("endpoint is not a valid URL: %w", err)
 		}
-		switch parsed.Scheme {
+		switch strings.ToLower(parsed.Scheme) {
 		case "https", "http":
 			if parsed.User != nil {
 				return fmt.Errorf("endpoint URL must not contain userinfo or credentials")
@@ -267,7 +274,11 @@ func validateEndpointLabel(text string) error {
 		}
 		return nil
 	}
-	if isPrivateHost(trimmed) {
+	host := trimmed
+	if splitHost, _, err := net.SplitHostPort(trimmed); err == nil {
+		host = splitHost
+	}
+	if isPrivateHost(host) {
 		return fmt.Errorf("endpoint looks private or internal; use a public or non-identifying label")
 	}
 	return nil
@@ -277,6 +288,12 @@ func isPrivateHost(host string) bool {
 	lower := strings.ToLower(strings.TrimSpace(host))
 	lower = strings.Trim(lower, "[]")
 	if lower == "" {
+		return true
+	}
+	if numericHost.MatchString(lower) {
+		return true
+	}
+	if _, err := strconv.ParseUint(lower, 0, 64); err == nil {
 		return true
 	}
 	for _, suffix := range []string{".localhost", ".local", ".internal", ".lan", ".home", ".corp"} {
