@@ -309,4 +309,5 @@ supply accounting, and eligibility remain separate, reviewable steps.
 
 - Supply checkpoint design: `docs/hf4-supply-checkpoint.md` (PR #138).
 - Evidence index: `docs/hf4-evidence-index.md`.
+- Archive collection: `docs/hf4-archive-collection.md` and `cmd/hf4-archive-collect/`.
 - Archive verifier: `hf4archive/` and `cmd/hf4-archive-verify/`.
