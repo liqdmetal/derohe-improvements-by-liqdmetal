@@ -90,8 +90,9 @@ func Test_IntegratedAddress_BuildsTX(t *testing.T) {
 		t.Fatalf("wallet sync error err %s chain height %d", err, chain.Get_Height())
 	}
 
-	wsrc.account.Ringsize = 2
-	wdst.account.Ringsize = 2
+	// K0 privacy floor: NORMAL/BURN transfers below ringsize 4 are rejected.
+	wsrc.account.Ringsize = 4
+	wdst.account.Ringsize = 4
 
 	// build an integrated address for wdst carrying only a destination port,
 	// i.e. exactly what MakeIntegratedAddress produces for a payment ID.

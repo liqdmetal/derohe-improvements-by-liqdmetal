@@ -110,8 +110,9 @@ func Test_Creation_TX_morecheck(t *testing.T) {
 		t.Fatalf("wallet sync error err %s", err)
 	}
 
-	wsrc.account.Ringsize = 2
-	wdst.account.Ringsize = 2
+	// K0 privacy floor: NORMAL/BURN transfers below ringsize 4 are rejected.
+	wsrc.account.Ringsize = 4
+	wdst.account.Ringsize = 4
 
 	// delta-based balance check (the old absolute 1500000 assumed an 800k
 	// start the simulator no longer grants; masked by the port-collision hang)

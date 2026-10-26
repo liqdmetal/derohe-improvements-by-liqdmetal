@@ -233,8 +233,9 @@ func Test_Creation_TX(t *testing.T) {
 	}
 
 	// here we are collecting proofs for later on bennhcmarking
-	for j := 2; j <= 128; j = j * 2 {
-		wsrc.account.Ringsize = j
+	// Start at 4: the K0 privacy floor rejects NORMAL/BURN ring sizes below 4.
+	for j := 4; j <= 128; j = j * 2 {
+		wsrc.SetRingSize(j)
 		tx, err := wsrc.TransferPayload0([]rpc.Transfer{rpc.Transfer{Destination: wdst.GetAddress().String(), Amount: 1}}, 0, false, rpc.Arguments{}, 0, false)
 		if err != nil {
 			t.Fatalf("Cannot create transaction, err %s", err)
@@ -248,8 +249,9 @@ func Test_Creation_TX(t *testing.T) {
 		}
 	}
 
-	wsrc.account.Ringsize = 2
-	wdst.account.Ringsize = 2
+	// K0 privacy floor: NORMAL/BURN transfers below ringsize 4 are rejected.
+	wsrc.SetRingSize(4)
+	wdst.SetRingSize(4)
 
 	// accounts are reversed
 	wdst.Sync_Wallet_Memory_With_Daemon()
