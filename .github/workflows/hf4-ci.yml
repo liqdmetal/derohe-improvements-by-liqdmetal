@@ -49,21 +49,18 @@ jobs:
             ./cmd/simulator/... \
             ./cmd/explorer/...
 
-      - name: Consensus, migration, supply, and simulator tests
+      - name: Consensus, migration, supply, wallet, and simulator tests
         run: |
-          go test -count=1 -timeout 15m \
+          go test -count=1 -timeout 20m \
             ./forensicsupply/... \
             ./block/... \
             ./blockchain/... \
             ./cmd/derod/rpc/... \
             ./rpc/... \
             ./dvm/... \
-            ./walletapi/rpcserver/... \
+            ./walletapi/... \
             ./cmd/simulator/... \
             ./cmd/explorer/...
-
-      - name: K0 wallet guard tests
-        run: go test -count=1 -timeout 5m -run 'K0|RingSize' ./walletapi/
 
   race:
     name: Race detector (core packages)
