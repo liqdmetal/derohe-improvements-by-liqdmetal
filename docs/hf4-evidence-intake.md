@@ -230,6 +230,22 @@ A non-zero exit means the bundle must not be accepted.
 - [ ] No secrets or personal data are present.
 - [ ] Summary JSON is recorded in the evidence index.
 
+## How accepted archives feed HF4 and the restoration
+
+1. A passing pair establishes a signed, byte-identical history from genesis to
+   the approved anchor.
+2. Replay that history with the HF4 node or simulator to derive per-height
+   supply and the balance/commitment state at the anchor.
+3. The checkpoint records the anchor tuple and the archive digests. The supply
+   result is reproducible from the archives, not self-reported.
+4. Restoration eligibility is computed from replayed state, not from submitted
+   balance claims. Self-reported balances are not accepted as evidence.
+5. Any claim or nullifier contract must consume replayed state or a checkpoint
+   commitment, never an operator's unverified spreadsheet.
+
+The verifier is deliberately limited to integrity and agreement. Replay,
+supply accounting, and eligibility remain separate, reviewable steps.
+
 ## Related
 
 - Supply checkpoint design: `docs/hf4-supply-checkpoint.md` (PR #138).
