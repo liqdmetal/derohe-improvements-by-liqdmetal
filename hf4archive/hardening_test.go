@@ -181,6 +181,16 @@ func TestPairSameKeyRejected(t *testing.T) {
 	}
 }
 
+func TestDuplicateBlockHashRejected(t *testing.T) {
+	dir := t.TempDir()
+	in := defaultInput()
+	in.blocks[1].BlockHash = in.blocks[2].BlockHash
+	approved, anchor := writeBundle(t, dir, in)
+	if _, err := OpenBundle(dir, approved, testNetwork, anchor); err == nil || !strings.Contains(err.Error(), "duplicate block hash") {
+		t.Fatalf("expected duplicate block failure, got %v", err)
+	}
+}
+
 func TestGenesisBlockHashMismatchRejected(t *testing.T) {
 	dir := t.TempDir()
 	in := defaultInput()

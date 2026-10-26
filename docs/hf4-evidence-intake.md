@@ -20,7 +20,8 @@ exactly before either is accepted for review.
 - both catalogs are canonical LF-terminated JSONL with no blank or reordered
   rows;
 - every block is present from topo height 0 through the approved anchor, in
-  order, with no gaps or duplicate transaction IDs inside a block;
+  order, with no gaps, no duplicate block hashes, and no duplicate transaction
+  IDs inside a block;
 - the topo-0 block hash equals the signed genesis block ID and the top-of-range
   block hash equals the signed anchor block ID;
 - every transaction occurrence has exactly one body row, in block order, with a

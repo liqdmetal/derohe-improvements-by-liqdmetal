@@ -112,6 +112,7 @@ func OpenBundle(dir string, approved ApprovedSource, expectedNetwork string, anc
 		expectedTopo     uint64
 		lastTopo         uint64
 	)
+	seenBlocks := make(map[[32]byte]bool)
 	for blockScanner.Scan() {
 		line := append([]byte(nil), blockScanner.Bytes()...)
 		if len(line) == 0 {
@@ -127,9 +128,14 @@ func OpenBundle(dir string, approved ApprovedSource, expectedNetwork string, anc
 		if block.TopoHeight != expectedTopo {
 			return nil, fmt.Errorf("%s topo_height %d out of order; want %d", BlocksName, block.TopoHeight, expectedTopo)
 		}
-		if _, err := parseHash32(block.BlockHash); err != nil {
+		blockHash, err := parseHash32(block.BlockHash)
+		if err != nil {
 			return nil, fmt.Errorf("%s block_hash at topo %d: %w", BlocksName, block.TopoHeight, err)
 		}
+		if seenBlocks[blockHash] {
+			return nil, fmt.Errorf("%s duplicate block hash at topo %d", BlocksName, block.TopoHeight)
+		}
+		seenBlocks[blockHash] = true
 		if block.TopoHeight == 0 && block.BlockHash != manifest.GenesisBlockID {
 			return nil, fmt.Errorf("%s genesis block hash does not match the manifest", BlocksName)
 		}
