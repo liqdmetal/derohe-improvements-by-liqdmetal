@@ -40,6 +40,8 @@ Do not publish an activation height until every gate above is closed.
 
 Run at least three independently operated nodes from the release commit.
 
+The two-node loopback rehearsal in [hf4-testnet-rehearsal.md](hf4-testnet-rehearsal.md) covers the v4 block path, the body commitment, the migration install, and the supply gate. It does not replace the multi-operator WAN rehearsal required here.
+
 1. Build the release binary from the release commit:
 
    ```sh
