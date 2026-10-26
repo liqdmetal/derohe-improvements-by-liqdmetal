@@ -51,7 +51,7 @@ jobs:
 
       - name: Consensus, migration, supply, wallet, and simulator tests
         run: |
-          go test -count=1 -timeout 20m \
+          go test -count=1 -p 1 -timeout 20m \
             ./forensicsupply/... \
             ./block/... \
             ./blockchain/... \
@@ -76,7 +76,7 @@ jobs:
 
       - name: Race tests
         run: |
-          go test -race -count=1 -timeout 10m \
+          go test -race -count=1 -p 1 -timeout 10m \
             ./forensicsupply/... \
             ./block/... \
             ./blockchain/... \
