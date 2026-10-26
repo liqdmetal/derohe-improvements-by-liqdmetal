@@ -33,7 +33,7 @@ The wallet extracts `destination` locally, strips it from `SCDATA`, and submits 
 
 Before base-layer processing, consensus validates migration calls against the active HF4 height and requires exactly one each of `SC_ACTION=SC_CALL`, the reserved `SC_ID`, and `entrypoint="Migrate"`; no other `SCDATA` fields are accepted. The transaction must contain exactly one native DERO payload, `BurnValue=0`, and ring size >=16. Calls that violate the shape are rejected before state changes. If marker execution or the DVM no-external-transfer invariant fails, block processing rejects the transaction; it does not synthesize a clear-value refund.
 
-The marker contract is installed deterministically at the configured activation height. This change does not set a mainnet activation height or perform a deployment.
+The marker contract is installed deterministically at the configured activation height. This change does not set a mainnet activation height or perform a deployment. The v4 transaction-body commitment and reporting-only forensic supply integration are documented in [HF4 consensus and reporting integration](hf4-consensus.md).
 
 ## Verification
 
