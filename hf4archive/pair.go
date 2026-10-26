@@ -18,7 +18,10 @@ type BundleSpec struct {
 // PairSummary describes two bundles that independently agree on the catalog.
 type PairSummary struct {
 	Network           string    `json:"network"`
-	GenesisBlockID    string    `json:"genesis_block_id"`
+	FirstTopoHeight   uint64    `json:"first_topo_height"`
+	GenesisBlockID    string    `json:"genesis_block_id,omitempty"`
+	StartBlockID      string    `json:"start_block_id,omitempty"`
+	StartStateRoot    string    `json:"start_state_root,omitempty"`
 	AnchorBlockID     string    `json:"anchor_block_id"`
 	AnchorStateRoot   string    `json:"anchor_state_root"`
 	ThroughTopoHeight uint64    `json:"through_topo_height"`
@@ -64,6 +67,12 @@ func VerifyPair(a, b BundleSpec) (*PairSummary, error) {
 	if first.Manifest.Network != second.Manifest.Network {
 		return nil, fmt.Errorf("manifest networks differ")
 	}
+	if first.Manifest.FirstTopoHeight != second.Manifest.FirstTopoHeight {
+		return nil, fmt.Errorf("archive first heights differ")
+	}
+	if first.Manifest.StartBlockID != second.Manifest.StartBlockID || first.Manifest.StartStateRoot != second.Manifest.StartStateRoot {
+		return nil, fmt.Errorf("archive start checkpoints differ")
+	}
 	if first.Manifest.ThroughTopoHeight != second.Manifest.ThroughTopoHeight {
 		return nil, fmt.Errorf("archive through heights differ")
 	}
@@ -79,7 +88,10 @@ func VerifyPair(a, b BundleSpec) (*PairSummary, error) {
 
 	return &PairSummary{
 		Network:           first.Manifest.Network,
+		FirstTopoHeight:   first.Manifest.FirstTopoHeight,
 		GenesisBlockID:    first.Manifest.GenesisBlockID,
+		StartBlockID:      first.Manifest.StartBlockID,
+		StartStateRoot:    first.Manifest.StartStateRoot,
 		AnchorBlockID:     first.Manifest.AnchorBlockID,
 		AnchorStateRoot:   first.Manifest.AnchorStateRoot,
 		ThroughTopoHeight: first.Manifest.ThroughTopoHeight,

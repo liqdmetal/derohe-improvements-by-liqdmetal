@@ -56,7 +56,9 @@ type Manifest struct {
 	SourceCommit      string `json:"source_commit"`
 	FirstTopoHeight   uint64 `json:"first_topo_height"`
 	ThroughTopoHeight uint64 `json:"through_topo_height"`
-	GenesisBlockID    string `json:"genesis_block_id"`
+	GenesisBlockID    string `json:"genesis_block_id,omitempty"`
+	StartBlockID      string `json:"start_block_id,omitempty"`
+	StartStateRoot    string `json:"start_state_root,omitempty"`
 	AnchorBlockID     string `json:"anchor_block_id"`
 	AnchorStateRoot   string `json:"anchor_state_root"`
 	BlocksSHA256      string `json:"blocks_sha256"`
@@ -89,21 +91,50 @@ type ApprovedSource struct {
 
 // Anchor is the independently approved chain identity the archive must cover.
 type Anchor struct {
+	FirstTopoHeight   uint64
 	GenesisBlockID    string
+	StartBlockID      string
+	StartStateRoot    string
 	AnchorBlockID     string
 	AnchorStateRoot   string
 	ThroughTopoHeight uint64
 }
 
 func (a Anchor) validate() error {
-	for _, field := range []struct {
+	if a.FirstTopoHeight > a.ThroughTopoHeight {
+		return fmt.Errorf("first topo height %d exceeds anchor topo height %d", a.FirstTopoHeight, a.ThroughTopoHeight)
+	}
+	fields := []struct {
 		name  string
 		value string
 	}{
-		{"genesis block ID", a.GenesisBlockID},
 		{"anchor block ID", a.AnchorBlockID},
 		{"anchor state root", a.AnchorStateRoot},
-	} {
+	}
+	if a.FirstTopoHeight == 0 {
+		if a.StartBlockID != "" || a.StartStateRoot != "" {
+			return fmt.Errorf("genesis anchor must not carry section start fields")
+		}
+		fields = append(fields, struct {
+			name  string
+			value string
+		}{"genesis block ID", a.GenesisBlockID})
+	} else {
+		if a.GenesisBlockID != "" {
+			return fmt.Errorf("section anchor must not carry a genesis block ID")
+		}
+		fields = append(fields,
+			struct {
+				name  string
+				value string
+			}{"start block ID", a.StartBlockID},
+			struct {
+				name  string
+				value string
+			}{"start state root", a.StartStateRoot},
+		)
+	}
+	for _, field := range fields {
 		if _, err := parseHash32(field.value); err != nil {
 			return fmt.Errorf("%s: %w", field.name, err)
 		}
@@ -355,16 +386,41 @@ func validateManifest(manifest Manifest, approved ApprovedSource, expectedNetwor
 	if err := validateCollectionCommand(manifest.CollectionCommand); err != nil {
 		return err
 	}
-	if manifest.FirstTopoHeight != 0 || manifest.ThroughTopoHeight != anchor.ThroughTopoHeight {
-		return fmt.Errorf("archive range does not cover genesis through the approved anchor")
+	if manifest.FirstTopoHeight != anchor.FirstTopoHeight || manifest.ThroughTopoHeight != anchor.ThroughTopoHeight {
+		return fmt.Errorf("archive range does not match the approved checkpoint")
 	}
-	genesisID, err := parseHash32(manifest.GenesisBlockID)
-	if err != nil {
-		return fmt.Errorf("manifest genesis block ID: %w", err)
-	}
-	expectedGenesis, _ := parseHash32(anchor.GenesisBlockID)
-	if genesisID != expectedGenesis {
-		return fmt.Errorf("manifest genesis block ID does not match approved anchor")
+	if manifest.FirstTopoHeight == 0 {
+		if manifest.StartBlockID != "" || manifest.StartStateRoot != "" {
+			return fmt.Errorf("genesis archive must not carry section start fields")
+		}
+		genesisID, err := parseHash32(manifest.GenesisBlockID)
+		if err != nil {
+			return fmt.Errorf("manifest genesis block ID: %w", err)
+		}
+		expectedGenesis, _ := parseHash32(anchor.GenesisBlockID)
+		if genesisID != expectedGenesis {
+			return fmt.Errorf("manifest genesis block ID does not match approved anchor")
+		}
+	} else {
+		if manifest.GenesisBlockID != "" {
+			return fmt.Errorf("section archive must not carry a genesis block ID")
+		}
+		startID, err := parseHash32(manifest.StartBlockID)
+		if err != nil {
+			return fmt.Errorf("manifest start block ID: %w", err)
+		}
+		expectedStart, _ := parseHash32(anchor.StartBlockID)
+		if startID != expectedStart {
+			return fmt.Errorf("manifest start block ID does not match approved checkpoint")
+		}
+		startState, err := parseHash32(manifest.StartStateRoot)
+		if err != nil {
+			return fmt.Errorf("manifest start state root: %w", err)
+		}
+		expectedStartState, _ := parseHash32(anchor.StartStateRoot)
+		if startState != expectedStartState {
+			return fmt.Errorf("manifest start state root does not match approved checkpoint")
+		}
 	}
 	blockID, err := parseHash32(manifest.AnchorBlockID)
 	if err != nil {

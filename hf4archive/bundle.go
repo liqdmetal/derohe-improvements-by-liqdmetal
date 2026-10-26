@@ -19,6 +19,8 @@ type Summary struct {
 	SourceID          string `json:"source_id"`
 	OperatorID        string `json:"operator_id"`
 	FirstTopoHeight   uint64 `json:"first_topo_height"`
+	StartBlockID      string `json:"start_block_id,omitempty"`
+	StartStateRoot    string `json:"start_state_root,omitempty"`
 	ThroughTopoHeight uint64 `json:"through_topo_height"`
 	Blocks            uint64 `json:"blocks"`
 	Transactions      uint64 `json:"transactions"`
@@ -109,7 +111,7 @@ func OpenBundle(dir string, approved ApprovedSource, expectedNetwork string, anc
 		blockCount       uint64
 		transactionCount uint64
 		bodyBytes        uint64
-		expectedTopo     uint64
+		expectedTopo     = manifest.FirstTopoHeight
 		lastTopo         uint64
 	)
 	seenBlocks := make(map[[32]byte]bool)
@@ -136,8 +138,12 @@ func OpenBundle(dir string, approved ApprovedSource, expectedNetwork string, anc
 			return nil, fmt.Errorf("%s duplicate block hash at topo %d", BlocksName, block.TopoHeight)
 		}
 		seenBlocks[blockHash] = true
-		if block.TopoHeight == 0 && block.BlockHash != manifest.GenesisBlockID {
-			return nil, fmt.Errorf("%s genesis block hash does not match the manifest", BlocksName)
+		if manifest.FirstTopoHeight == 0 {
+			if block.TopoHeight == 0 && block.BlockHash != manifest.GenesisBlockID {
+				return nil, fmt.Errorf("%s genesis block hash does not match the manifest", BlocksName)
+			}
+		} else if block.TopoHeight == manifest.FirstTopoHeight && block.BlockHash != manifest.StartBlockID {
+			return nil, fmt.Errorf("%s section start block hash does not match the manifest", BlocksName)
 		}
 		if block.TopoHeight == manifest.ThroughTopoHeight && block.BlockHash != manifest.AnchorBlockID {
 			return nil, fmt.Errorf("%s anchor block hash does not match the manifest", BlocksName)
@@ -210,6 +216,8 @@ func OpenBundle(dir string, approved ApprovedSource, expectedNetwork string, anc
 		SourceID:          manifest.SourceID,
 		OperatorID:        manifest.OperatorID,
 		FirstTopoHeight:   manifest.FirstTopoHeight,
+		StartBlockID:      manifest.StartBlockID,
+		StartStateRoot:    manifest.StartStateRoot,
 		ThroughTopoHeight: manifest.ThroughTopoHeight,
 		Blocks:            blockCount,
 		Transactions:      transactionCount,

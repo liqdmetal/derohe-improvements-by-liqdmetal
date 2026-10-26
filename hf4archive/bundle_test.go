@@ -21,14 +21,17 @@ const (
 )
 
 type bundleInput struct {
-	blocks     []BlockRow
-	bodies     []BodyRow
-	bodyByTx   map[string][]byte
-	network    string
-	archiveID  string
-	sourceID   string
-	operatorID string
-	seed       byte
+	blocks         []BlockRow
+	bodies         []BodyRow
+	bodyByTx       map[string][]byte
+	network        string
+	archiveID      string
+	sourceID       string
+	operatorID     string
+	seed           byte
+	firstTopo      uint64
+	startBlockID   string
+	startStateRoot string
 }
 
 func defaultInput() bundleInput {
@@ -99,13 +102,18 @@ func writeBundle(t *testing.T, dir string, in bundleInput) (ApprovedSource, Anch
 		CollectionCommand: "derod export --test-fixture",
 		Endpoint:          "https://example.org/archive",
 		SourceCommit:      strings.Repeat("ab", 20),
-		FirstTopoHeight:   0,
+		FirstTopoHeight:   in.firstTopo,
 		ThroughTopoHeight: through,
-		GenesisBlockID:    testGenesisID,
 		AnchorBlockID:     testAnchorID,
 		AnchorStateRoot:   testStateRoot,
 		BlocksSHA256:      hashHex(blocksBytes),
 		BodiesSHA256:      hashHex(bodiesBytes),
+	}
+	if in.firstTopo == 0 {
+		manifest.GenesisBlockID = testGenesisID
+	} else {
+		manifest.StartBlockID = in.startBlockID
+		manifest.StartStateRoot = in.startStateRoot
 	}
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{in.seed}, ed25519.SeedSize))
 	manifestBytes, err := json.Marshal(manifest)
@@ -119,16 +127,23 @@ func writeBundle(t *testing.T, dir string, in bundleInput) (ApprovedSource, Anch
 	if err := os.WriteFile(filepath.Join(dir, SignatureName), []byte(hex.EncodeToString(signature)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return ApprovedSource{
-		SourceID:         in.sourceID,
-		OperatorID:       in.operatorID,
-		SigningPublicKey: hex.EncodeToString(key.Public().(ed25519.PublicKey)),
-	}, Anchor{
-		GenesisBlockID:    testGenesisID,
+	anchor := Anchor{
+		FirstTopoHeight:   in.firstTopo,
 		AnchorBlockID:     testAnchorID,
 		AnchorStateRoot:   testStateRoot,
 		ThroughTopoHeight: through,
 	}
+	if in.firstTopo == 0 {
+		anchor.GenesisBlockID = testGenesisID
+	} else {
+		anchor.StartBlockID = in.startBlockID
+		anchor.StartStateRoot = in.startStateRoot
+	}
+	return ApprovedSource{
+		SourceID:         in.sourceID,
+		OperatorID:       in.operatorID,
+		SigningPublicKey: hex.EncodeToString(key.Public().(ed25519.PublicKey)),
+	}, anchor
 }
 
 func encodeRows(t *testing.T, rows interface{}) []byte {
