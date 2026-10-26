@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/deroproject/derohe/block"
 	"github.com/deroproject/derohe/blockchain"
@@ -32,6 +33,35 @@ func syncMigrationSimulatorWallet(t *testing.T, wallet *walletapi.Wallet_Disk) {
 	t.Helper()
 	if err := wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
 		t.Fatalf("sync wallet %s: %v", wallet.GetAddress().String(), err)
+	}
+}
+
+// connectSimulatorDaemon waits for the simulator RPC server to accept the
+// websocket connection and then keeps the shared wallet connection alive.
+func connectSimulatorDaemon(t *testing.T, rpcPort string) {
+	t.Helper()
+	globals.Arguments["--daemon-address"] = rpcPort
+	walletapi.SetDaemonAddress(rpcPort)
+
+	deadline := time.Now().Add(10 * time.Second)
+	var err error
+	for {
+		if err = walletapi.Connect(rpcPort); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("connect simulator daemon at %s: %v", rpcPort, err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	go walletapi.Keep_Connectivity()
+}
+
+func closeSimulatorWallets(wallets ...*walletapi.Wallet_Disk) {
+	for _, wallet := range wallets {
+		if wallet != nil {
+			wallet.Close_Encrypted_Wallet()
+		}
 	}
 }
 
@@ -260,7 +290,7 @@ func TestSeamlessMigrationAtHF4AndLaterBlock(t *testing.T) {
 	config.Testnet.Genesis_Block_Hash = genesisBlock.GetHash()
 	config.Mainnet.Genesis_Block_Hash = genesisBlock.GetHash()
 
-	chain, rpcServer, params := simulator_chain_start(t)
+	chain, rpcServer, params := simulator_chain_start()
 	if chain == nil || rpcServer == nil {
 		t.Fatal("start local simulator chain")
 	}
