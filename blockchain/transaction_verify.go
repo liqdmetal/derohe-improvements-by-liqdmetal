@@ -66,6 +66,12 @@ func (chain *Blockchain) Verify_Transaction_Coinbase(cbl *block.Complete_Block, 
 		return fmt.Errorf("tx is not coinbase")
 	}
 
+	// Guard the height-based emission schedule against an accidental curve
+	// regression. This does not cap forensic or spendable supply.
+	if supply := CalcSupply(cbl.Bl.Height); supply > config.MAX_SUPPLY {
+		return fmt.Errorf("scheduled supply %d exceeds emission ceiling %d at height %d", supply, config.MAX_SUPPLY, cbl.Bl.Height)
+	}
+
 	return nil // success comes last
 }
 
@@ -211,6 +217,16 @@ func (chain *Blockchain) Verify_Transaction_NonCoinbase_CheckNonce_TipsAtHeight(
 // is 4 — sender + receiver + 2 decoys. SC_TX / coinbase / registration /
 // premine are exempt (they have their own auth model; SC owner auth moves
 // to verify_sig — K0 Fix C).
+func k0EffectiveTransactionType(tx *transaction.Transaction) transaction.TransactionType {
+	if tx == nil {
+		return transaction.NORMAL
+	}
+	if tx.TransactionType == transaction.SC_TX && !tx.SCDATA.Has(rpc.SCACTION, rpc.DataUint64) {
+		return transaction.NORMAL
+	}
+	return tx.TransactionType
+}
+
 func k0RingSizeFloorReject(height uint64, txtype transaction.TransactionType, ringsize uint64) bool {
 	floor := uint64(globals.Config.K0_MIN_RING4_HEIGHT)
 	if height < floor {
@@ -248,6 +264,7 @@ func (chain *Blockchain) Verify_Transaction_NonCoinbase(tx *transaction.Transact
 func (chain *Blockchain) Verify_Transaction_NonCoinbaseAtHeight(tx *transaction.Transaction, validationHeight uint64) (err error) {
 	return chain.verify_Transaction_NonCoinbase_internal(false, tx, validationHeight)
 }
+
 func (chain *Blockchain) Expand_Transaction_NonCoinbase(tx *transaction.Transaction) (err error) {
 	return chain.Expand_Transaction_NonCoinbaseAtHeight(tx, nextCandidateHeight(chain))
 }
@@ -291,6 +308,7 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 			chain.cache_IsNonceValidTips.Add(tips_string, true)
 		}
 	}
+
 
 	if tx.TransactionType == transaction.REGISTRATION {
 		if _, ok := transaction_valid_cache.Load(tx_hash); ok {
@@ -374,10 +392,7 @@ func (chain *Blockchain) verify_Transaction_NonCoinbase_internal(skip_proof bool
 		// exemption for free. Treat any SC_TX that does not actually carry an
 		// SC action as NORMAL for the floor. The real SC_TX exemption (real
 		// contracts that need SIGNER()) is closed properly by K0 Fix B2.
-		txtype := tx.TransactionType
-		if txtype == transaction.SC_TX && !tx.SCDATA.Has(rpc.SCACTION, rpc.DataUint64) {
-			txtype = transaction.NORMAL // SC_TX-without-an-action is a NORMAL tx in disguise
-		}
+		txtype := k0EffectiveTransactionType(tx) // classify by the action, not the attacker-settable header type
 		if k0RingSizeFloorReject(validationHeight, txtype, tx.Payloads[t].Statement.RingSize) {
 			return fmt.Errorf("K0: ringsize %d < 4 rejected for NORMAL/BURN txs from height %d (privacy floor; use ringsize >= 4)",
 				tx.Payloads[t].Statement.RingSize, globals.Config.K0_MIN_RING4_HEIGHT)

@@ -60,6 +60,11 @@ const MAX_RINGSIZE = 128 // <= 128,  ringsize will be accepted
 
 const PREMINE uint64 = 1228125400000 // this is total supply of old chain ( considering both chain will be running together for some time)
 
+// MAX_SUPPLY is a ceiling on the height-based emission schedule only. It does
+// not cap forensic/spendable supply or alter balances; the schedule's real
+// terminal value is below this 21M-DERO regression guard.
+const MAX_SUPPLY uint64 = 21_000_000 * 100_000
+
 type SettingsStruct struct {
 	MAINNET_BOOTSTRAP_DIFFICULTY uint64 `env:"MAINNET_BOOTSTRAP_DIFFICULTY" envDefault:"10000000"` // mainnet bootstrap is 10 MH/s
 	MAINNET_MINIMUM_DIFFICULTY   uint64 `env:"MAINNET_MINIMUM_DIFFICULTY" envDefault:"100000"`     // mainnet minimum is 100 KH/s
@@ -78,10 +83,10 @@ var Settings SettingsStruct
 // gives immense scalability,
 const STABLE_LIMIT = int64(8)
 
+// we can have number of chains running for testing reasons
 // HeightUnscheduled marks a hard fork that has no approved activation height.
 const HeightUnscheduled int64 = -1
 
-// we can have number of chains running for testing reasons
 type CHAIN_CONFIG struct {
 	Name       string
 	Network_ID uuid.UUID // network ID
@@ -99,8 +104,9 @@ type CHAIN_CONFIG struct {
 	// K0_MIN_RING4_HEIGHT: from this height onward, NORMAL/BURN txs with
 	// ringsize < 4 are rejected (spec §9 K0, k0-fix-design.md Fix B1).
 	// Ringsize 2 exposes the signer by design (Extract_signer) and provides
-	// no anonymity set. SC_TX remains exempt until the SIGNER alternative
-	// (Fix C) lands. Mainnet: set post-HF3; testnet: 0 (immediate).
+	// no anonymity set. SC_TX remains exempt to preserve existing contract
+	// semantics; verify_sig enables contract-defined authorization without
+	// SIGNER, but migration is not consensus-enforced. Mainnet: post-HF3; testnet: 0.
 	K0_MIN_RING4_HEIGHT int64
 
 	Dev_Address        string // to which address the integrator rewatd will go, if user doesn't specify integrator address'
@@ -119,7 +125,7 @@ var Mainnet = CHAIN_CONFIG{Name: "mainnet",
 	MAJOR_HF2_HEIGHT:        481600,
 	MAJOR_HF3_HEIGHT:        7504640,
 	MAJOR_HF4_HEIGHT:        HeightUnscheduled, // awaiting consensus-approved activation height
-	K0_MIN_RING4_HEIGHT:     7600000, // post-HF3, mainnet
+	K0_MIN_RING4_HEIGHT:     7600000,           // post-HF3, mainnet
 
 	Genesis_Tx: "" +
 		"01" + // version
@@ -137,12 +143,12 @@ var Testnet = CHAIN_CONFIG{Name: "testnet", // testnet will always have last 3 b
 	RPC_Default_Port:        40402,
 	Wallet_RPC_Default_Port: 40403,
 
-	Dev_Address:      "deto1qy0ehnqjpr0wxqnknyc66du2fsxyktppkr8m8e6jvplp954klfjz2qqdzcd8p",
-	HF1_HEIGHT:       0, // on testnet apply at genesis
-	HF2_HEIGHT:       0, // on testnet apply at genesis
-	MAJOR_HF2_HEIGHT: 4, // on testnet apply at 4
-	MAJOR_HF3_HEIGHT: 0, // on testnet apply at genesis
-	MAJOR_HF4_HEIGHT: 0, // on testnet apply at genesis
+	Dev_Address:         "deto1qy0ehnqjpr0wxqnknyc66du2fsxyktppkr8m8e6jvplp954klfjz2qqdzcd8p",
+	HF1_HEIGHT:          0, // on testnet apply at genesis
+	HF2_HEIGHT:          0, // on testnet apply at genesis
+	MAJOR_HF2_HEIGHT:    4, // on testnet apply at 4
+	MAJOR_HF3_HEIGHT:    0, // on testnet apply at genesis
+	MAJOR_HF4_HEIGHT:    0, // on testnet apply at genesis
 	K0_MIN_RING4_HEIGHT: 0, // on testnet apply at genesis (immediate)
 
 	Genesis_Tx: "" +

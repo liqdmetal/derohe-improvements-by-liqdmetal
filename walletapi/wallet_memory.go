@@ -17,7 +17,6 @@
 package walletapi
 
 import "fmt"
-import "time"
 import "crypto/rand"
 import "crypto/sha1"
 import "sync"
@@ -90,6 +89,10 @@ type Wallet_Memory struct {
 	sync.RWMutex
 
 	sync_in_progress sync.Mutex // whether sync is in progress
+
+	syncLifecycleMu sync.Mutex // guards online/offline transitions and sync-loop lifecycle
+	syncDone        chan struct{}
+	syncCancel      func() // cancels local sync RPC waits during offline/close transitions
 }
 
 // when smart contracts are implemented, each will have it's own universe to track and maintain transactions
@@ -118,7 +121,7 @@ func Create_Encrypted_Wallet_Memory(password string, seed *crypto.BNRed) (w *Wal
 
 	err = w.Set_Encrypted_Wallet_Password(password) // lock the db with the password
 
-	w.Quit = make(chan bool)
+	w.Quit = make(chan bool, 1)
 
 	w.id = string((w.account.GetAddress().String())[:8]) // set unique id for logs
 
@@ -207,7 +210,7 @@ func Open_Encrypted_Wallet_Memory(password string, filedata []byte) (w *Wallet_M
 		return
 	}
 
-	w.Quit = make(chan bool)
+	w.Quit = make(chan bool, 1)
 	// todo make any routines necessary, such as sync etc
 
 	// try to deseal password and store it
@@ -318,9 +321,13 @@ func (w *Wallet_Memory) Get_Encrypted_Wallet() []byte {
 }
 
 // close the wallet
-// note that w is still valid and can be used to obtaine encrypted copy of data
+// note that w is still valid and can be used to obtain an encrypted copy of data
 func (w *Wallet_Memory) Close_Encrypted_Wallet() {
-	time.Sleep(time.Second) // give goroutines some time to quit
+	if w == nil {
+		return
+	}
+	w.SetOfflineMode()
+	w.waitForSyncLoop()
 	w.Save_Wallet()
 }
 

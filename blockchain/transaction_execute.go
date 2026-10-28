@@ -60,6 +60,17 @@ func CalcBlockReward(height uint64) uint64 {
 	return BaseReward >> ((height + RewardReductionInterval) / RewardReductionInterval)
 }
 
+// checkedCoinbaseReward detects uint64 wraparound while combining the height-
+// based block subsidy with transaction fees. Fees are transfers, not newly
+// scheduled emission, so they are not rejected merely for exceeding MAX_SUPPLY.
+func checkedCoinbaseReward(baseReward, fees uint64) (uint64, error) {
+	fullReward := baseReward + fees
+	if fullReward < baseReward {
+		return 0, fmt.Errorf("coinbase reward addition overflow: base_reward=%d fees=%d", baseReward, fees)
+	}
+	return fullReward, nil
+}
+
 // process the miner tx, giving fees, miner rewatd etc
 func (chain *Blockchain) process_miner_transaction(bl *block.Block, genesis bool, balance_tree *graviton.Tree, fees uint64, height uint64) {
 
@@ -397,7 +408,6 @@ func (chain *Blockchain) process_transaction_sc(cache map[crypto.Hash]*graviton.
 		return
 	}
 
-	// we must commit all the changes
 	// check whether we are not overflowing/underflowing, means SC is not over sending
 	if err == nil {
 		if scid == rpc.SeamlessMigrationSCID() {
@@ -442,7 +452,6 @@ func Extract_signer(tx *transaction.Transaction) (signer [33]byte, err error) {
 	for t := range tx.Payloads {
 		if uint64(len(tx.Payloads[t].Statement.Publickeylist_compressed)) != tx.Payloads[t].Statement.RingSize {
 			panic("tx is not expanded")
-			return signer, fmt.Errorf("tx is not expanded")
 		}
 		if tx.Payloads[t].SCID.IsZero() && tx.Payloads[t].Statement.RingSize == 2 {
 			parity := tx.Payloads[t].Proof.Parity()

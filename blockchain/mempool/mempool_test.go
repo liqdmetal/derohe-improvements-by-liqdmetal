@@ -131,5 +131,23 @@ func Test_mempool(t *testing.T) {
 	if len(pool.Mempool_List_TX()) != 0 {
 		t.Errorf("Pool should  have 0 tx")
 	}
+}
 
+func TestMempoolRejectsOverflowingFeeSum(t *testing.T) {
+	pool, err := Init_Mempool(nil)
+	if err != nil {
+		t.Fatalf("initialize mempool: %v", err)
+	}
+
+	tx := transaction.Transaction{}
+	tx.Payloads = make([]transaction.AssetPayload, 2)
+	tx.Payloads[0].Statement.Fees = ^uint64(0)
+	tx.Payloads[1].Statement.Fees = 1
+
+	if pool.Mempool_Add_TX(&tx, 0) {
+		t.Fatal("mempool accepted a transaction whose main-asset fee sum overflows uint64")
+	}
+	if got := len(pool.Mempool_List_TX()); got != 0 {
+		t.Fatalf("overflowing-fee transaction was queued; pool length = %d", got)
+	}
 }

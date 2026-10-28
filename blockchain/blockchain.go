@@ -386,12 +386,9 @@ func registrationPoWValid(hash crypto.Hash, height uint64, activationHeight int6
 	return hash[0] == 0 || hash[1] == 0
 }
 
-// this is the only entrypoint for new / old blocks even for genesis block
-// this will add the entire block atomically to the chain
-// this is the only function which can add blocks to the chain
-// this is exported, so ii can be fed new blocks by p2p layer
-// genesis block is no different
-// TODO: we should stop mining while adding the new block
+// Add_Complete_Block is the only entrypoint for accepting old or new blocks,
+// including genesis blocks. It adds a complete block atomically to the chain.
+// TODO: stop mining while adding the new block.
 func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err error, result bool) {
 
 	var block_hash crypto.Hash
@@ -703,7 +700,6 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 				return errormsg.ErrInvalidBlock, false
 			}
 			if _, ok := tx_checklist[tx_hash]; !ok {
-				// tx is NOT found in map, RED alert reject the block
 				block_logger.Error(fmt.Errorf("Missing TX"), "TX missing", "txid", tx_hash.String())
 				return errormsg.ErrInvalidBlock, false
 			}
@@ -939,13 +935,24 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 		bl_current := cbl.Bl
 		height_current := chain.Calculate_Height_At_Tips(bl_current.Tips)
 		hard_fork_version_current := chain.Get_Current_Version_at_Height(height_current)
+		var declaredFees uint64
 
 		for i := 0; i < len(cbl.Txs); i++ {
+			provided_fee, feeErr := cbl.Txs[i].FeesChecked()
+			if feeErr != nil {
+				block_logger.Error(feeErr, "TX verification failed", "txid", cbl.Txs[i].GetHash())
+				return errormsg.ErrInvalidTX, false
+			}
+			declaredFees, feeErr = checkedFeeSum(declaredFees, provided_fee)
+			if feeErr != nil {
+				block_logger.Error(feeErr, "TX verification failed", "txid", cbl.Txs[i].GetHash())
+				return errormsg.ErrInvalidTX, false
+			}
+
 			// check whether enough fees is provided in the transaction
 			switch cbl.Txs[i].TransactionType {
 			case transaction.NORMAL, transaction.BURN_TX, transaction.SC_TX:
 				calculated_fee := chain.Calculate_TX_fee(hard_fork_version_current, uint64(len(cbl.Txs[i].Serialize())))
-				provided_fee := cbl.Txs[i].Fees() // get fee from tx
 				if !chain.simulator && calculated_fee > provided_fee {
 					block_logger.Error(fmt.Errorf("TX rejected due to low fees (calculated %d, provided %d)", calculated_fee, provided_fee), "TX verification failed", "txid", cbl.Txs[i].GetHash())
 					return errormsg.ErrInvalidTX, false
@@ -961,6 +968,10 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 					return errormsg.ErrInvalidTX, false
 				}
 			}
+		}
+		if _, feeErr := checkedCoinbaseReward(CalcBlockReward(bl_current.Height), declaredFees); feeErr != nil {
+			block_logger.Error(feeErr, "TX verification failed")
+			return errormsg.ErrInvalidTX, false
 		}
 	}
 
@@ -1079,34 +1090,38 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 					panic(fmt.Errorf("stored transaction ID mismatch at index %d", txIndex))
 				}
 				for t := range tx.Payloads {
-					if !tx.Payloads[t].SCID.IsZero() {
-						if _, ok := sc_change_cache[tx.Payloads[t].SCID]; !ok || bl_current.Height < uint64(globals.Config.MAJOR_HF3_HEIGHT) {
-							tree, _ := ss.GetTree(string(tx.Payloads[t].SCID[:]))
-							sc_change_cache[tx.Payloads[t].SCID] = tree
+						if !tx.Payloads[t].SCID.IsZero() {
+							if _, ok := sc_change_cache[tx.Payloads[t].SCID]; !ok || bl_current.Height < uint64(globals.Config.MAJOR_HF3_HEIGHT) {
+								tree, _ := ss.GetTree(string(tx.Payloads[t].SCID[:]))
+								sc_change_cache[tx.Payloads[t].SCID] = tree
+							}
 						}
 					}
-				}
-				// Consensus-check the migration payload before process_transaction spends its source input.
-				if migrationErr := validateSeamlessMigrationCall(tx, bl_current.Height, balance_tree); migrationErr != nil {
-					block_logger.Error(migrationErr, "invalid seamless migration transaction", "txid", txhash)
-					return errormsg.ErrInvalidTX, false
-				}
+					// Consensus-check the migration payload before process_transaction spends its source input.
+					if migrationErr := validateSeamlessMigrationCall(tx, bl_current.Height, balance_tree); migrationErr != nil {
+						block_logger.Error(migrationErr, "invalid seamless migration transaction", "txid", txhash)
+						return errormsg.ErrInvalidTX, false
+					}
 
-				// we have loaded a tx successfully, now lets execute it
-				tx_fees := chain.process_transaction(sc_change_cache, tx, balance_tree, bl_current.Height)
+					// we have loaded a tx successfully, now lets execute it
+					tx_fees := chain.process_transaction(sc_change_cache, tx, balance_tree, bl_current.Height)
 
-				//fmt.Printf("transaction %s type %s data %+v\n", txhash, tx.TransactionType, tx.SCDATA)
-				if tx.TransactionType == transaction.SC_TX {
-					var scErr error
-					tx_fees, scErr = chain.process_transaction_sc(sc_change_cache, ss, bl_current.Height, uint64(current_topo_block), bl_current.Timestamp/1000, bl_current_hash, tx, balance_tree, sc_meta)
-					if scErr != nil {
-						block_logger.Error(scErr, "SC transaction execution returned error", "txid", txhash)
-						if isSeamlessMigrationCall(tx) {
-							return errormsg.ErrInvalidTX, false
+					//fmt.Printf("transaction %s type %s data %+v\n", txhash, tx.TransactionType, tx.SCDATA)
+					if tx.TransactionType == transaction.SC_TX {
+						var scErr error
+						tx_fees, scErr = chain.process_transaction_sc(sc_change_cache, ss, bl_current.Height, uint64(current_topo_block), bl_current.Timestamp/1000, bl_current_hash, tx, balance_tree, sc_meta)
+						if scErr != nil {
+							block_logger.Error(scErr, "SC transaction execution returned error", "txid", txhash)
+							if isSeamlessMigrationCall(tx) {
+								return errormsg.ErrInvalidTX, false
+							}
 						}
 					}
-				}
-				fees_collected += tx_fees
+					var feeErr error
+					fees_collected, feeErr = checkedFeeSum(fees_collected, tx_fees)
+					if feeErr != nil {
+						return feeErr, false
+					}
 			}
 
 			// at this point, we must commit all the SCs, so entire tree hash is interlinked
@@ -1145,6 +1160,9 @@ func (chain *Blockchain) Add_Complete_Block(cbl *block.Complete_Block) (err erro
 
 			}
 
+			if _, rewardErr := checkedCoinbaseReward(CalcBlockReward(bl_current.Height), fees_collected); rewardErr != nil {
+				return rewardErr, false
+			}
 			chain.process_miner_transaction(bl_current, bl_current.Height == 0, balance_tree, fees_collected, bl_current.Height)
 		}
 
@@ -1405,9 +1423,12 @@ func (chain *Blockchain) Add_TX_To_Pool(tx *transaction.Transaction) error {
 		return fmt.Errorf("TX rejected  Size %d byte Max possible %d", len(tx.Serialize()), config.STARGATE_HE_MAX_TX_SIZE)
 	}
 
-	// check whether enough fees is provided in the transaction
+	// Check the fee sum without allowing malformed per-payload fees to wrap.
+	provided_fee, feeErr := tx.FeesChecked()
+	if feeErr != nil {
+		return fmt.Errorf("TX %s rejected because its fee sum is invalid: %w", txhash, feeErr)
+	}
 	calculated_fee := chain.Calculate_TX_fee(hf_version, uint64(len(tx.Serialize())))
-	provided_fee := tx.Fees() // get fee from tx
 
 	//logger.WithFields(log.Fields{"txid": txhash}).Warnf("TX fees check disabled  provided fee %d calculated fee %d", provided_fee, calculated_fee)
 	if !chain.simulator && calculated_fee > provided_fee {

@@ -29,6 +29,10 @@ import (
 	"github.com/deroproject/derohe/rpc"
 )
 
+func getInfoForensicSupply(configName string, simulator bool, height, hf3Height int64) (*rpc.ForensicSupplyRecord, error) {
+	return rpc.ForensicSupplyForNetwork(configName, simulator, height, hf3Height)
+}
+
 func GetInfo(ctx context.Context) (result rpc.GetInfo_Result, err error) {
 
 	defer func() { // safety so if anything wrong happens, we return error
@@ -81,14 +85,23 @@ func GetInfo(ctx context.Context) (result rpc.GetInfo_Result, err error) {
 	//result.Dynamic_fee_per_kb = config.FEE_PER_KB
 	//result.Median_Block_Size = config.CRYPTONOTE_MAX_BLOCK_SIZE
 
-	result.Total_Supply = blockchain.CalcSupply(uint64(chain.Get_Height())) / 100000 // only give deros remove fractional part
-	result.Spendable_Supply = blockchain.SpendableSupply(uint64(chain.Get_Height())) / 100000
+	simulator := globals.IsSimulator()
+	supplyHeight := uint64(result.Height)
+	result.Total_Supply = blockchain.CalcSupply(supplyHeight) / 100000 // only give deros remove fractional part
+	result.Spendable_Supply = blockchain.SpendableSupplyOnNextBlock(supplyHeight, globals.Config.Name, simulator, globals.Config.MAJOR_HF3_HEIGHT) / 100000
+	// Simulators often retain the selected mainnet config. Never expose a
+	// mainnet-gated forensic record from a simulated chain.
+	forensicSupply, forensicErr := getInfoForensicSupply(globals.Config.Name, simulator, result.Height, globals.Config.MAJOR_HF3_HEIGHT)
+	if forensicErr != nil {
+		return rpc.GetInfo_Result{}, forensicErr
+	}
+	result.ForensicSupply = forensicSupply
 
 	if globals.Config.Name != config.Mainnet.Name { // anything other than mainnet is testnet at this point in time
 		result.Testnet = true
 	}
 
-	if globals.IsSimulator() {
+	if simulator {
 		result.Network = "Simulator"
 	}
 

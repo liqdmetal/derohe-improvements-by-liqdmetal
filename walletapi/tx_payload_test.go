@@ -18,16 +18,13 @@ package walletapi
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/deroproject/derohe/blockchain"
 	"github.com/deroproject/derohe/config"
 	"github.com/deroproject/derohe/cryptography/crypto"
-	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/rpc"
 	"github.com/deroproject/derohe/transaction"
 )
@@ -35,15 +32,12 @@ import (
 // This will test that the payload can be decrypted by sender and receiver
 func Test_Payload_TX(t *testing.T) {
 
-	time.Sleep(time.Millisecond)
-
 	Initialize_LookupTable(1, 1<<17)
 
-	wsrc_temp_db := filepath.Join(os.TempDir(), "1dero_temporary_test_wallet_src.db")
-	wdst_temp_db := filepath.Join(os.TempDir(), "1dero_temporary_test_wallet_dst.db")
-
-	os.Remove(wsrc_temp_db)
-	os.Remove(wdst_temp_db)
+	walletTestDir := t.TempDir()
+	wsrc_temp_db := filepath.Join(walletTestDir, "source.db")
+	wdst_temp_db := filepath.Join(walletTestDir, "destination.db")
+	wgen_temp_db := filepath.Join(walletTestDir, "genesis.db")
 
 	wsrc, err := Create_Encrypted_Wallet_From_Recovery_Words(wsrc_temp_db, "QWER", "sequence atlas unveil summon pebbles tuesday beer rudely snake rockets different fuselage woven tagged bested dented vegan hover rapid fawns obvious muppet randomly seasons randomly")
 	if err != nil {
@@ -55,7 +49,7 @@ func Test_Payload_TX(t *testing.T) {
 		t.Fatalf("Cannot create encrypted wallet, err %s", err)
 	}
 
-	wgenesis, err := Create_Encrypted_Wallet_From_Recovery_Words(wdst_temp_db, "QWER", "perfil lujo faja puma favor pedir detalle doble carbón neón paella cuarto ánimo cuento conga correr dental moneda león donar entero logro realidad acceso doble")
+	wgenesis, err := Create_Encrypted_Wallet_From_Recovery_Words(wgen_temp_db, "QWER", "perfil lujo faja puma favor pedir detalle doble carbón neón paella cuarto ánimo cuento conga correr dental moneda león donar entero logro realidad acceso doble")
 	if err != nil {
 		t.Fatalf("Cannot create encrypted wallet, err %s", err)
 	}
@@ -71,20 +65,12 @@ func Test_Payload_TX(t *testing.T) {
 	config.Testnet.Genesis_Block_Hash = genesis_block.GetHash()
 	config.Mainnet.Genesis_Block_Hash = genesis_block.GetHash()
 
-	chain, rpcserver, params := simulator_chain_start()
+	chain, _, params := simulator_chain_start(t)
 	rpcport := params["rpcport"].(string)
 
-	defer func() {
-		simulator_chain_stop(chain, rpcserver)
-		wsrc.Close_Encrypted_Wallet()
-		wdst.Close_Encrypted_Wallet()
-		os.Remove(wsrc_temp_db) // cleanup after test
-		os.Remove(wdst_temp_db)
-	}()
+	t.Cleanup(func() { closeSimulatorWallets(wgenesis, wsrc, wdst) })
 
-	globals.Arguments["--daemon-address"] = rpcport
-
-	go Keep_Connectivity()
+	connectSimulatorDaemon(t, rpcport)
 
 	t.Logf("src %s\n", wsrc.GetAddress())
 	t.Logf("dst %s\n", wdst.GetAddress())
@@ -105,11 +91,10 @@ func Test_Payload_TX(t *testing.T) {
 	wgenesis.SetDaemonAddress(rpcport)
 	wsrc.SetDaemonAddress(rpcport)
 	wdst.SetDaemonAddress(rpcport)
-	wgenesis.SetOnlineMode()
-	wsrc.SetOnlineMode()
-	wdst.SetOnlineMode()
+	setWalletOnlineWithoutSyncLoop(wgenesis)
+	setWalletOnlineWithoutSyncLoop(wsrc)
+	setWalletOnlineWithoutSyncLoop(wdst)
 
-	time.Sleep(time.Second * 2)
 	if err = wsrc.Sync_Wallet_Memory_With_Daemon(); err != nil {
 		t.Fatalf("Wallet sync error err %s", err)
 	}
@@ -182,8 +167,6 @@ func Test_Payload_TX(t *testing.T) {
 	if wsrc.account.Balance_Mature != pre_src-800000 {
 		t.Fatalf("Failed sender balance check, expected %d actual %d", pre_src-800000, wsrc.account.Balance_Mature)
 	}
-
-	time.Sleep(time.Second)
 
 	minHeight := uint64(0)
 	maxHeight := uint64(chain.Get_Height()) + 1

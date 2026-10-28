@@ -1,52 +1,85 @@
-// Wargame: K0 min-ring-4 floor SC_TX-exemption bypass.
-//
-// TransactionType is an ATTACKER-CONTROLLED header field (serialized at
-// transaction.go:316, not derived from payload structure). The floor
-// (transaction_verify.go:334) exempts SC_TX. But process_transaction_sc
-// (transaction_execute.go:267) treats SC_TX with empty SCDATA as a NO-OP
-// (returns fees, no SC execution). So a ring-2 NORMAL transfer stamped
-// SC_TX in the header:
-//   1. dodges the floor (SC_TX exempt)
-//   2. processes balance identically (NORMAL/SC_TX share the same case)
-//   3. needs no SCDATA (empty = no-op)
-// => the B1 floor is a paper wall until B2's uses_signer registry closes
-//    the SC_TX exemption at consensus.
 package blockchain
 
 import (
 	"testing"
 
 	"github.com/deroproject/derohe/config"
+	"github.com/deroproject/derohe/cryptography/crypto"
 	"github.com/deroproject/derohe/globals"
+	"github.com/deroproject/derohe/rpc"
 	"github.com/deroproject/derohe/transaction"
 )
 
-// Decision-rule level: the exact same ring-2 NORMAL structure passes iff
-// the attacker lies about TransactionType.
-func TestWargame_K0FloorSC_TXTypeLieBypass(t *testing.T) {
-	globals.Config = config.Mainnet // floor at 7,600,000
-	tip := uint64(8_000_000)        // well past fork
+func TestK0EffectiveTransactionTypeRequiresAction(t *testing.T) {
+	previousConfig := globals.Config
+	globals.Config = config.Mainnet
+	t.Cleanup(func() { globals.Config = previousConfig })
 
-	// honest NORMAL ring-2 -> rejected (floor works)
-	if !k0RingSizeFloorReject(tip, transaction.NORMAL, 2) {
-		t.Fatal("ring-2 NORMAL should be rejected post-fork")
+	noAction := &transaction.Transaction{}
+	noAction.TransactionType = transaction.SC_TX
+	if got := k0EffectiveTransactionType(noAction); got != transaction.NORMAL {
+		t.Fatalf("SC_TX without an action classified as %v; want NORMAL", got)
+	}
+	if !k0RingSizeFloorReject(8_000_000, k0EffectiveTransactionType(noAction), 2) {
+		t.Fatal("ring-size-2 SC_TX without SCACTION bypassed the NORMAL privacy floor")
 	}
 
-	// The RAW decision rule exempts SC_TX — the hardening lives at the call
-	// site in transaction_verify.go (SC_TX without SCACTION is re-stamped
-	// NORMAL). This test documents that the exemption is only for REAL SC
-	// invocations, which the call site now enforces by checking SCDATA.
-	t.Log("call site: SC_TX lacking SCACTION in SCDATA is re-stamped NORMAL -> floor applies")
-	t.Log("call site: SC_TX WITH SCACTION stays exempt (real contract, SIGNER()-path, Fix B2 territory)")
-	t.Log("HARDENED: ring-2 NORMAL transfer restamped SC_TX with empty SCDATA no longer bypasses")
+	wrongTypeAction := &transaction.Transaction{}
+	wrongTypeAction.TransactionType = transaction.SC_TX
+	wrongTypeAction.SCDATA = rpc.Arguments{{Name: rpc.SCACTION, DataType: rpc.DataString, Value: "SC_CALL"}}
+	if got := k0EffectiveTransactionType(wrongTypeAction); got != transaction.NORMAL {
+		t.Fatalf("SC_TX with non-uint64 SCACTION classified as %v; want NORMAL", got)
+	}
+
+	actualCall := &transaction.Transaction{}
+	actualCall.TransactionType = transaction.SC_TX
+	actualCall.SCDATA = rpc.Arguments{{Name: rpc.SCACTION, DataType: rpc.DataUint64, Value: uint64(rpc.SC_CALL)}}
+	if got := k0EffectiveTransactionType(actualCall); got != transaction.SC_TX {
+		t.Fatalf("SC_TX with a valid SCACTION classified as %v; want SC_TX", got)
+	}
+	if k0RingSizeFloorReject(8_000_000, k0EffectiveTransactionType(actualCall), 2) {
+		t.Fatal("real SC_TX was incorrectly classified as NORMAL by the privacy floor")
+	}
 }
 
-// The execute-path no-op is what makes the lie cheap: SC_TX with no SCDATA
-// runs no SC at all (transaction_execute.go:267). Document that here.
-func TestWargame_K0FloorSC_TXNoOpExecutePath(t *testing.T) {
-	// This asserts the design property we relied on: empty SCDATA SC_TX is
-	// a fee-only no-op in the execute path. (The real assertion is in the
-	// decision-rule test above; this pins the invariant in the test suite.)
-	t.Log("SC_TX + empty SCDATA -> process_transaction_sc returns tx.Fees(), nil (no-op)")
-	t.Log("Therefore NORMAL-balance ring-2 with SC_TX stamp + no SCDATA is a free floor bypass")
+func TestProcessTransactionSCEmptySCDATransactionIsFeeOnlyNoop(t *testing.T) {
+	tx := transaction.Transaction{}
+	tx.TransactionType = transaction.SC_TX
+	tx.Payloads = make([]transaction.AssetPayload, 1)
+	tx.Payloads[0].Statement.Fees = 23
+
+	var blid crypto.Hash
+	var chain *Blockchain // empty SCDATA must return before dereferencing chain/state
+	got, err := chain.process_transaction_sc(nil, nil, 0, 0, 0, blid, tx, nil, nil)
+	if err != nil {
+		t.Fatalf("empty SCDATA returned error: %v", err)
+	}
+	if got != 23 {
+		t.Fatalf("empty SCDATA returned fee %d; want 23", got)
+	}
+}
+
+func TestProcessTransactionSCPanicPropagates(t *testing.T) {
+	tx := transaction.Transaction{}
+	tx.Version = 1
+	tx.TransactionType = transaction.SC_TX
+	tx.SCDATA = rpc.Arguments{
+		{Name: rpc.SCACTION, DataType: rpc.DataUint64, Value: uint64(rpc.SC_INSTALL)},
+		{Name: rpc.SCCODE, DataType: rpc.DataString, Value: `
+Function Initialize() Uint64
+  10 STORE("owner", "alice")
+  20 RETURN 0
+End Function
+`},
+	}
+
+	var blid crypto.Hash
+	panicked := false
+	func() {
+		defer func() { panicked = recover() != nil }()
+		(&Blockchain{}).process_transaction_sc(nil, nil, 0, 0, 0, blid, tx, nil, nil)
+	}()
+	if !panicked {
+		t.Fatal("internal SC-processing panic was swallowed instead of reaching Add_Complete_Block's reject boundary")
+	}
 }

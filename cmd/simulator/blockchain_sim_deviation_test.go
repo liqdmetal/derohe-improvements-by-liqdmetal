@@ -16,9 +16,7 @@
 
 package main
 
-import "os"
 import "fmt"
-import "time"
 import "testing"
 
 import "path/filepath"
@@ -34,30 +32,30 @@ import "github.com/deroproject/derohe/blockchain"
 // this will test that the keys are placed properly and thus can be decoded by recievers
 func Test_Blockchain_Deviation(t *testing.T) {
 
-	time.Sleep(time.Millisecond)
-
 	walletapi.Initialize_LookupTable(1, 1<<17)
 
-	wsrc_temp_db := filepath.Join(os.TempDir(), "dero_temporary_test_wallet_src.db")
-	wdst_temp_db := filepath.Join(os.TempDir(), "dero_temporary_test_wallet_dst.db")
-
-	os.Remove(wsrc_temp_db)
-	os.Remove(wdst_temp_db)
+	walletTestDir := t.TempDir()
+	wsrc_temp_db := filepath.Join(walletTestDir, "source.db")
+	wdst_temp_db := filepath.Join(walletTestDir, "destination.db")
+	wgen_temp_db := filepath.Join(walletTestDir, "genesis.db")
 
 	wsrc, err := walletapi.Create_Encrypted_Wallet_From_Recovery_Words(wsrc_temp_db, "QWER", "sequence atlas unveil summon pebbles tuesday beer rudely snake rockets different fuselage woven tagged bested dented vegan hover rapid fawns obvious muppet randomly seasons randomly")
 	if err != nil {
 		t.Fatalf("Cannot create encrypted wallet, err %s", err)
 	}
+	t.Cleanup(func() { wsrc.Close_Encrypted_Wallet() })
 
 	wdst, err := walletapi.Create_Encrypted_Wallet_From_Recovery_Words(wdst_temp_db, "QWER", "Dekade Spagat Bereich Radclub Yeti Dialekt Unimog Nomade Anlage Hirte Besitz Märzluft Krabbe Nabel Halsader Chefarzt Hering tauchen Neuerung Reifen Umgang Hürde Alchimie Amnesie Reifen")
 	if err != nil {
 		t.Fatalf("Cannot create encrypted wallet, err %s", err)
 	}
+	t.Cleanup(func() { wdst.Close_Encrypted_Wallet() })
 
-	wgenesis, err := walletapi.Create_Encrypted_Wallet_From_Recovery_Words(wdst_temp_db, "QWER", "perfil lujo faja puma favor pedir detalle doble carbón neón paella cuarto ánimo cuento conga correr dental moneda león donar entero logro realidad acceso doble")
+	wgenesis, err := walletapi.Create_Encrypted_Wallet_From_Recovery_Words(wgen_temp_db, "QWER", "perfil lujo faja puma favor pedir detalle doble carbón neón paella cuarto ánimo cuento conga correr dental moneda león donar entero logro realidad acceso doble")
 	if err != nil {
 		t.Fatalf("Cannot create encrypted wallet, err %s", err)
 	}
+	t.Cleanup(func() { wgenesis.Close_Encrypted_Wallet() })
 
 	// fix genesis tx and genesis tx hash
 	genesis_tx := transaction.Transaction{Transaction_Prefix: transaction.Transaction_Prefix{Version: 1, Value: 2012345}}
@@ -70,10 +68,11 @@ func Test_Blockchain_Deviation(t *testing.T) {
 	config.Testnet.Genesis_Block_Hash = genesis_block.GetHash()
 	config.Mainnet.Genesis_Block_Hash = genesis_block.GetHash()
 
-	chain, rpcserver, _ := simulator_chain_start()
+	chain, rpcserver, params := simulator_chain_start(t)
 	defer simulator_chain_stop(chain, rpcserver)
+	rpcport := params["rpcport"].(string)
 
-	globals.Arguments["--daemon-address"] = rpcport_test
+	globals.Arguments["--daemon-address"] = rpcport
 
 	t.Logf("src %s\n", wsrc.GetAddress())
 	t.Logf("dst %s\n", wdst.GetAddress())
@@ -86,9 +85,6 @@ func Test_Blockchain_Deviation(t *testing.T) {
 	}
 
 	simulator_chain_mineblock(chain, wgenesis.GetAddress(), t) // mine a block at tip
-
-	defer os.Remove(wsrc_temp_db) // cleanup after test
-	defer os.Remove(wdst_temp_db) // cleanup after test
 
 	// we do not need wallets any more, start the tests
 

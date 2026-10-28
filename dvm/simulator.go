@@ -179,9 +179,10 @@ func (s *Simulator) common(w_sc_tree, w_sc_data_tree *Tree_Wrapper, scid crypto.
 	}
 
 	gascompute, gasstorage, err = Execute_sc_function(w_sc_tree, w_sc_data_tree, scid, bl_height, bl_topoheight, uint64(time.Now().Unix()), blid, scid, sc, entrypoint, 1, 0, signer, incoming_values, SCDATA, fees, simulator)
-	fmt.Printf("sc execution error %s\n", err)
+	if err != nil {
+		fmt.Printf("sc execution error %v\n", err)
+	}
 
-	// we must commit all the changes
 	// check whether we are not overflowing/underflowing, means SC is not over sending
 	if err == nil {
 		if scid == rpc.SeamlessMigrationSCID() {
@@ -191,17 +192,10 @@ func (s *Simulator) common(w_sc_tree, w_sc_data_tree *Tree_Wrapper, scid crypto.
 		}
 	}
 
-	if err != nil { // error occured, give everything to SC, since we may not have information to send them back
-		if scid == rpc.SeamlessMigrationSCID() {
-			return
-		}
-		var zeroaddress [33]byte
-		if signer != zeroaddress { // if we can identify sender, return funds to him
-			ErrorRevert(s.ss, s.cache, s.balance_tree, signer, scid, incoming_values)
-		} else { //  we could not extract signer, give burned funds to SC
+	if err != nil {
+		if scid != rpc.SeamlessMigrationSCID() {
 			ErrorRevert(s.ss, s.cache, s.balance_tree, signer, scid, incoming_values)
 		}
-
 		return
 	}
 	ProcessExternal(s.ss, s.cache, s.balance_tree, signer, scid, w_sc_data_tree, w_sc_tree)
@@ -270,8 +264,34 @@ func SanityCheckNoExternalTransfers(w_sc_data_tree *Tree_Wrapper) error {
 	return nil
 }
 
-// any error during this will panic
+// SanityCheckExternalTransfersStrict is retained for callers that need strict destination checks.
+func SanityCheckExternalTransfersStrict(w_sc_data_tree *Tree_Wrapper, balance_tree *graviton.Tree, scid crypto.Hash) error {
+	if err := SanityCheckExternalTransfers(w_sc_data_tree, balance_tree, scid); err != nil {
+		return err
+	}
+	for _, transfer := range w_sc_data_tree.Transfere {
+		if transfer.Amount == 0 {
+			continue
+		}
+		if _, err := balance_tree.Get([]byte(transfer.Address)); err != nil {
+			if xerrors.Is(err, graviton.ErrNotFound) {
+				return fmt.Errorf("external transfer destination account is unregistered")
+			}
+			return fmt.Errorf("could not load external transfer destination: %w", err)
+		}
+	}
+	return nil
+}
+
+// ErrorRevert preserves the legacy signer-directed refund behavior.
 func ErrorRevert(ss *graviton.Snapshot, cache map[crypto.Hash]*graviton.Tree, balance_tree *graviton.Tree, signer [33]byte, scid crypto.Hash, incoming_values map[crypto.Hash]uint64) {
+	ErrorRevertToAddress(ss, cache, balance_tree, signer, scid, incoming_values)
+}
+
+// ErrorRevertToAddress credits incoming values to a caller-selected recipient.
+// Callers must authenticate that recipient before invoking this legacy DVM
+// recovery helper. Any inconsistency is a consensus-processing failure and panics.
+func ErrorRevertToAddress(ss *graviton.Snapshot, cache map[crypto.Hash]*graviton.Tree, balance_tree *graviton.Tree, recipient [33]byte, scid crypto.Hash, incoming_values map[crypto.Hash]uint64) {
 	var err error
 
 	for scid_asset, burnvalue := range incoming_values {
@@ -297,12 +317,12 @@ func ErrorRevert(ss *graviton.Snapshot, cache map[crypto.Hash]*graviton.Tree, ba
 			panic("tree cannot be nil at this point in time")
 		}
 
-		if balance_serialized, err1 := curbtree.Get(signer[:]); err1 != nil { // no error can occur
+		if balance_serialized, err1 := curbtree.Get(recipient[:]); err1 != nil { // no error can occur
 			panic(err1) // only disk corruption can reach here
 		} else {
 			nb := new(crypto.NonceBalance).Deserialize(balance_serialized)
-			nb.Balance = nb.Balance.Plus(new(big.Int).SetUint64(burnvalue)) // add back burn value to users balance homomorphically
-			curbtree.Put(signer[:], nb.Serialize())                         // reserialize and store
+			nb.Balance = nb.Balance.Plus(new(big.Int).SetUint64(burnvalue)) // add back burn value homomorphically
+			curbtree.Put(recipient[:], nb.Serialize())                      // reserialize and store
 		}
 	}
 }

@@ -56,6 +56,9 @@ type RPCServer struct {
 	mux        *http.ServeMux
 	Exit_Event chan bool // blockchain is shutting down and we must quit ASAP
 	sync.RWMutex
+	rpcBind   string
+	simulator bool
+	mainnet   bool
 }
 
 // var Exit_In_Progress bool
@@ -110,14 +113,13 @@ func Notify_Block_Addition() {
 }
 
 // this function triggers notification to all clients that they should repoll
-func Notify_MiniBlock_Addition() {
-
+func Notify_MiniBlock_Addition(simulator bool) {
 	for {
 		chain.RPC_NotifyNewMiniBlock.L.Lock()
 		chain.RPC_NotifyNewMiniBlock.Wait()
 		chain.RPC_NotifyNewMiniBlock.L.Unlock()
 
-		if globals.Arguments["--simulator"] == nil || (globals.Arguments["--simulator"] != nil && globals.Arguments["--simulator"].(bool) == false) {
+		if !simulator {
 			go func() {
 				defer globals.Recover(2)
 				SendJob()
@@ -159,6 +161,13 @@ func RPCServer_Start(params map[string]interface{}) (*RPCServer, error) {
 
 	logger = globals.Logger.WithName("RPC") // all components must use this logger
 	chain = params["chain"].(*blockchain.Blockchain)
+	if bind, ok := params["--rpc-bind"].(string); ok {
+		r.rpcBind = bind
+	}
+	if simulator, ok := params["--simulator"].(bool); ok {
+		r.simulator = simulator
+	}
+	r.mainnet = globals.IsMainnet()
 
 	go r.Run()
 	logger.Info("RPC/Websocket server started")
@@ -190,12 +199,12 @@ func (r *RPCServer) Run() {
 	r.mux = http.NewServeMux()
 
 	default_address := "127.0.0.1:" + fmt.Sprintf("%d", config.Mainnet.RPC_Default_Port)
-	if !globals.IsMainnet() {
+	if !r.mainnet {
 		default_address = "127.0.0.1:" + fmt.Sprintf("%d", config.Testnet.RPC_Default_Port)
 	}
 
-	if _, ok := globals.Arguments["--rpc-bind"]; ok && globals.Arguments["--rpc-bind"] != nil {
-		addr, err := net.ResolveTCPAddr("tcp", globals.Arguments["--rpc-bind"].(string))
+	if r.rpcBind != "" {
+		addr, err := net.ResolveTCPAddr("tcp", r.rpcBind)
 		if err != nil {
 			logger.Error(err, "--rpc-bind address is invalid")
 		} else {
@@ -236,9 +245,9 @@ func (r *RPCServer) Run() {
 		logger.Info("runtime profiling disabled on non-loopback bind", "address", default_address)
 	}
 
-	go Notify_Block_Addition()     // process all blocks
-	go Notify_MiniBlock_Addition() // process all blocks
-	go Notify_Height_Changes()     // gives notification of changed height
+	go Notify_Block_Addition()                // process all blocks
+	go Notify_MiniBlock_Addition(r.simulator) // process all miniblocks
+	go Notify_Height_Changes()                // gives notification of changed height
 	if err := r.srv.ListenAndServe(); err != http.ErrServerClosed {
 		logger.Error(err, "ListenAndServe failed")
 	}

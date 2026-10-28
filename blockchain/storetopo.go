@@ -107,6 +107,13 @@ func (s *storetopofs) Sync() {
 	s.topomapping.Sync()
 }
 
+func (s *storetopofs) Close() error {
+	if s.topomapping == nil {
+		return nil
+	}
+	return s.topomapping.Close()
+}
+
 func (s *storetopofs) Clean(index int64) (err error) {
 	var state_version uint64
 	var blid [32]byte

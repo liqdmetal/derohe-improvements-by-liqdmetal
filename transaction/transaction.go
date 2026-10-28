@@ -223,12 +223,28 @@ func (tx *Transaction) IsProofRequired() (result bool) {
 
 }
 
-func (tx *Transaction) Fees() (fees uint64) {
+// FeesChecked returns the sum of main-asset transaction fees, rejecting uint64 overflow.
+func (tx *Transaction) FeesChecked() (uint64, error) {
 	var zero_scid [32]byte
+	var fees uint64
 	for i := range tx.Payloads {
 		if zero_scid == tx.Payloads[i].SCID {
-			fees += tx.Payloads[i].Statement.Fees
+			fee := tx.Payloads[i].Statement.Fees
+			if fee > ^uint64(0)-fees {
+				return 0, fmt.Errorf("transaction fee sum overflows uint64")
+			}
+			fees += fee
 		}
+	}
+	return fees, nil
+}
+
+// Fees returns the fee sum and saturates malformed overflow to MaxUint64 so it
+// can never wrap into a smaller fee. Consensus admission paths must use FeesChecked.
+func (tx *Transaction) Fees() uint64 {
+	fees, err := tx.FeesChecked()
+	if err != nil {
+		return ^uint64(0)
 	}
 	return fees
 }

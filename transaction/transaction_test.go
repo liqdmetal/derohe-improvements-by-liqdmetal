@@ -130,5 +130,22 @@ func Test_TX_Valid(t *testing.T) {
 		}
 
 	}
+}
 
+func TestFeesCheckedRejectsOverflowWithoutWrapping(t *testing.T) {
+	tx := Transaction{Payloads: make([]AssetPayload, 2)}
+	tx.Payloads[0].Statement.Fees = 12
+	tx.Payloads[1].Statement.Fees = 30
+	if got, err := tx.FeesChecked(); err != nil || got != 42 {
+		t.Fatalf("FeesChecked() = (%d, %v), want (42, nil)", got, err)
+	}
+
+	tx.Payloads[0].Statement.Fees = ^uint64(0)
+	tx.Payloads[1].Statement.Fees = 1
+	if got, err := tx.FeesChecked(); err == nil || got != 0 {
+		t.Fatalf("FeesChecked() on overflow = (%d, %v), want (0, error)", got, err)
+	}
+	if got := tx.Fees(); got != ^uint64(0) {
+		t.Fatalf("Fees() on overflow = %d, want MaxUint64 sentinel", got)
+	}
 }

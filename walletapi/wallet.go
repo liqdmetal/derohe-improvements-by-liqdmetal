@@ -17,6 +17,7 @@
 package walletapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/pem"
@@ -82,20 +83,23 @@ type Account struct {
 }
 
 func (w *Wallet_Memory) AddListener(event rpc.EventType, callback func(interface{})) {
+	w.Lock()
+	defer w.Unlock()
 	if w.account.EventListeners == nil {
 		w.account.EventListeners = map[rpc.EventType][]func(interface{}){}
 	}
+	w.account.EventListeners[event] = append(w.account.EventListeners[event], callback)
+}
 
-	var listeners []func(interface{})
-	if stored, ok := w.account.EventListeners[event]; ok {
-		listeners = stored
-	}
-
-	listeners = append(listeners, callback)
-	w.account.EventListeners[event] = listeners
+func (w *Wallet_Memory) eventListenersSnapshot(event rpc.EventType) []func(interface{}) {
+	w.RLock()
+	defer w.RUnlock()
+	return append([]func(interface{}){}, w.account.EventListeners[event]...)
 }
 
 func (w *Wallet_Memory) getEncryptedBalanceresult(scid crypto.Hash) rpc.GetEncryptedBalance_Result {
+	w.RLock()
+	defer w.RUnlock()
 	for _, e := range w.account.Balance_Result {
 		if scid == e.SCID {
 			return e
@@ -105,6 +109,8 @@ func (w *Wallet_Memory) getEncryptedBalanceresult(scid crypto.Hash) rpc.GetEncry
 }
 
 func (w *Wallet_Memory) setEncryptedBalanceresult(scid crypto.Hash, entry rpc.GetEncryptedBalance_Result) {
+	w.Lock()
+	defer w.Unlock()
 	for i, e := range w.account.Balance_Result {
 		if scid == e.SCID {
 			w.account.Balance_Result[i] = entry
@@ -114,39 +120,31 @@ func (w *Wallet_Memory) setEncryptedBalanceresult(scid crypto.Hash, entry rpc.Ge
 	w.account.Balance_Result = append(w.account.Balance_Result, entry)
 }
 
-// add a entry in the suitable place
-// this is always single threaded
+// add an entry in the suitable place
 func (w *Wallet_Memory) InsertReplace(scid crypto.Hash, e rpc.Entry) {
-	var entries []rpc.Entry
-	if _, ok := w.account.EntriesNative[scid]; ok {
-		entries = w.account.EntriesNative[scid]
-	}
+	w.Lock()
+	entries := w.account.EntriesNative[scid]
 
 	i := sort.Search(len(entries), func(j int) bool {
 		return entries[j].TopoHeight >= e.TopoHeight && entries[j].TransactionPos >= e.TransactionPos && entries[j].Pos >= e.Pos
 	})
 
-	// entry already exists, we are probably rescanning/overwiting, delete anything afterwards
+	// An existing entry is being rescanned; discard it and everything after it.
 	if i < len(entries) && entries[i].TopoHeight == e.TopoHeight && entries[i].TransactionPos == e.TransactionPos && entries[i].Pos == e.Pos {
 		entries = entries[:i]
-		// x is present at data[i]
-	} else {
-		// x is not present in data,
-		// but i is the index where it would be inserted.
 	}
 	entries = append(entries, e)
-
-	// Notify listeners of this new entry
-	if listeners, ok := w.account.EventListeners[rpc.NewEntry]; ok {
-		for _, listener := range listeners {
-			listener(e)
-		}
-	}
 
 	if w.account.EntriesNative == nil {
 		w.account.EntriesNative = map[crypto.Hash][]rpc.Entry{}
 	}
 	w.account.EntriesNative[scid] = entries
+	listeners := append([]func(interface{}){}, w.account.EventListeners[rpc.NewEntry]...)
+	w.Unlock()
+
+	for _, listener := range listeners {
+		listener(e)
+	}
 }
 
 func (w *Wallet_Memory) TokenAdd(scid crypto.Hash) (err error) {
@@ -255,12 +253,16 @@ func (w *Wallet_Memory) Get_Balance_Rescan() (mature_balance uint64, locked_bala
 // get the unlocked balance ( amounts which are mature and can be spent at this time )
 // offline wallets may get this wrong, since they may not have latest data//
 func (w *Wallet_Memory) Get_Balance_scid(scid crypto.Hash) (mature_balance uint64, locked_balance uint64) {
+	w.RLock()
+	defer w.RUnlock()
 	return w.account.Balance[scid], 0
 }
 
 // get main balance directly
 func (w *Wallet_Memory) Get_Balance() (mature_balance uint64, locked_balance uint64) {
 	var scid crypto.Hash
+	w.RLock()
+	defer w.RUnlock()
 	return w.account.Balance[scid], 0
 }
 
@@ -405,15 +407,17 @@ func (w *Wallet_Memory) Get_TopoHeight() int64 {
 }
 
 func (w *Wallet_Memory) Get_Daemon_Height() uint64 {
-	return uint64(daemon_height)
+	return uint64(Get_Daemon_Height())
 }
 
-// return topoheight of darmon
+// return topoheight of daemon
 func (w *Wallet_Memory) Get_Daemon_TopoHeight() int64 {
-	return daemon_topoheight
+	return Get_Daemon_TopoHeight()
 }
 
 func (w *Wallet_Memory) IsRegistered() bool {
+	w.RLock()
+	defer w.RUnlock()
 	return w.account.Registered
 }
 
@@ -426,12 +430,37 @@ func (w *Wallet_Memory) Get_Keys() _Keys {
 	return w.account.Keys
 }
 
-// by default a wallet opens in Offline Mode
-// however, if the wallet is in online mode, it can be made offline instantly using this
+// by default a wallet opens in Offline Mode. SetOfflineMode cancels the local
+// sync context; the loop exits after its RPC call unwinds so close can save safely.
+// The daemon may continue processing an already-sent request.
 func (w *Wallet_Memory) SetOfflineMode() bool {
-	current_mode := w.wallet_online_mode
+	if w == nil {
+		return false
+	}
+
+	w.syncLifecycleMu.Lock()
+	currentMode := w.wallet_online_mode
 	w.wallet_online_mode = false
-	return current_mode
+	done := w.syncDone
+	quit := w.Quit
+	cancel := w.syncCancel
+	if done != nil {
+		select {
+		case <-done:
+		default:
+			if quit != nil {
+				select {
+				case quit <- true:
+				default:
+				}
+			}
+		}
+	}
+	w.syncLifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return currentMode
 }
 
 func (w *Wallet_Memory) SetNetwork(mainnet bool) bool {
@@ -445,10 +474,15 @@ func (w *Wallet_Memory) GetNetwork() bool {
 
 // return current mode
 func (w *Wallet_Memory) GetMode() bool {
+	if w == nil {
+		return false
+	}
+	w.syncLifecycleMu.Lock()
+	defer w.syncLifecycleMu.Unlock()
 	return w.wallet_online_mode
 }
 
-// use the endpoint set  by the program
+// use the endpoint set by the program
 func (w *Wallet_Memory) SetDaemonAddress(endpoint string) string {
 	Daemon_Endpoint = endpoint
 	return Daemon_Endpoint
@@ -458,16 +492,60 @@ func SetDaemonAddress(endpoint string) string {
 	return Daemon_Endpoint
 }
 
-// by default a wallet opens in Offline Mode
-// however, It can be made online by calling this
+// SetOnlineMode starts at most one sync goroutine. It waits for a prior loop
+// to exit before starting another, preventing offline/online toggles from
+// accumulating background syncers.
 func (w *Wallet_Memory) SetOnlineMode() bool {
-	current_mode := w.wallet_online_mode
-	w.wallet_online_mode = true
-
-	if current_mode != true { // trigger subroutine if previous mode was offline
-		go w.sync_loop() // start sync subroutine
+	if w == nil {
+		return false
 	}
-	return current_mode
+
+	for {
+		w.syncLifecycleMu.Lock()
+		if w.wallet_online_mode {
+			w.syncLifecycleMu.Unlock()
+			return true
+		}
+
+		if done := w.syncDone; done != nil {
+			select {
+			case <-done:
+				w.syncDone = nil
+			default:
+				w.syncLifecycleMu.Unlock()
+				<-done
+				continue
+			}
+		}
+
+		quit := make(chan bool, 1)
+		done := make(chan struct{})
+		ctx, cancel := context.WithCancel(context.Background())
+		w.Quit = quit
+		w.syncDone = done
+		w.syncCancel = cancel
+		w.wallet_online_mode = true
+		w.syncLifecycleMu.Unlock()
+
+		go func() {
+			defer close(done)
+			defer cancel()
+			w.sync_loop(ctx, quit)
+		}()
+		return false
+	}
+}
+
+func (w *Wallet_Memory) waitForSyncLoop() {
+	if w == nil {
+		return
+	}
+	w.syncLifecycleMu.Lock()
+	done := w.syncDone
+	w.syncLifecycleMu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
 // by default a wallet opens in Offline Mode

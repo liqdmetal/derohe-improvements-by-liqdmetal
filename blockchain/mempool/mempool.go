@@ -147,6 +147,9 @@ func (pool *Mempool) HasChanged() (result bool) {
 // a tx should only be added to pool after verification is complete
 func (pool *Mempool) Mempool_Add_TX(tx *transaction.Transaction, Height uint64) (result bool) {
 	result = false
+	if _, err := tx.FeesChecked(); err != nil {
+		return false
+	}
 	pool.Lock()
 	defer pool.Unlock()
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -465,8 +466,8 @@ func TestXSWDServer(t *testing.T) {
 					ID:      1,
 					Method:  "DERO.Ping",
 				}
-				err = conn.WriteJSON(request2)
-				assert.Error(t, err, "Request 2 %q should give error when not connected with application %d", request2.Method, i)
+				_, _, err = testXSWDCall(t, conn, request2)
+				assert.Error(t, err, "Request 2 %q should be rejected when not connected with application %d", request2.Method, i)
 			})
 
 			// // Request 3
@@ -477,8 +478,8 @@ func TestXSWDServer(t *testing.T) {
 					ID:      9,
 					Method:  "GetAddress",
 				}
-				err = conn.WriteJSON(request3)
-				assert.Error(t, err, "Request 3 %q should give error when not connected with application %d", request3.Method, i)
+				_, _, err = testXSWDCall(t, conn, request3)
+				assert.Error(t, err, "Request 3 %q should be rejected when not connected with application %d", request3.Method, i)
 			})
 
 			// // Request 4
@@ -489,8 +490,8 @@ func TestXSWDServer(t *testing.T) {
 					ID:      1,
 					Method:  "QueryKey",
 				}
-				err = conn.WriteJSON(request4)
-				assert.Error(t, err, "Request 4 %q should give error when not connected with application %d", request4.Method, i)
+				_, _, err = testXSWDCall(t, conn, request4)
+				assert.Error(t, err, "Request 4 %q should be rejected when not connected with application %d", request4.Method, i)
 			})
 
 			// // Request 5 request
@@ -503,8 +504,8 @@ func TestXSWDServer(t *testing.T) {
 					Method:  "SignData",
 					Params:  somedata,
 				}
-				err = conn.WriteJSON(request5)
-				assert.Error(t, err, "Request 5 %q should give error when not connected with application %d", request5.Method, i)
+				_, _, err = testXSWDCall(t, conn, request5)
+				assert.Error(t, err, "Request 5 %q should be rejected when not connected with application %d", request5.Method, i)
 			})
 
 			// Close the app connection
@@ -543,7 +544,7 @@ func TestXSWDServer(t *testing.T) {
 				assert.Len(t, server.GetApplications(), 1, "Application %d should be present and is not", i)
 				assert.True(t, server.HasApplicationId(app.Id), "Application ID %d should be present and is not", i)
 				// Check that no permissions have been added to the server
-				for ii, appp := range server.applications {
+				for ii, appp := range server.GetApplications() {
 					assert.Len(t, appp.Permissions, 0, "Application %d should not have permissions: %v", ii, appp.Permissions)
 				}
 			} else {
@@ -907,7 +908,7 @@ func TestXSWDServer(t *testing.T) {
 				assert.Nil(t, serverErr, "Response 13b on application %d should not have error: %v", i, serverErr)
 				assert.NotNil(t, response13b.Result, "Response 13b on application %d should not be nil", i)
 				// Nothing should be stored
-				for ii, appp := range server.applications {
+				for ii, appp := range server.GetApplications() {
 					assert.Empty(t, appp.Permissions[request13b.Method], "Application %d should not have permissions for this method: %v", ii, request13b.Method)
 				}
 
@@ -1587,6 +1588,9 @@ func TestXSWDServerWithPort(t *testing.T) {
 
 	// Test daemon calls to XSWD server
 	t.Run("Daemon", func(t *testing.T) {
+		if os.Getenv("DERO_XSWD_LIVE_TESTS") != "1" {
+			t.Skip("set DERO_XSWD_LIVE_TESTS=1 to run live daemon endpoint tests")
+		}
 		var endpoint string
 		var endpoints = []string{"127.0.0.1:10102", "89.38.99.117:10102", "node.derofoundation.org:11012"}
 		for i, ep := range endpoints {
@@ -1763,7 +1767,7 @@ func TestXSWDClosures(t *testing.T) {
 		assert.NoErrorf(t, err, "Application failed to write data to server: %s", err)
 		authResponse := testHandleAuthResponse(t, conn)
 		assert.True(t, authResponse.Accepted, "Application should be accepted and is not")
-		assert.Len(t, server.applications, 1, "There should be one applications")
+		assert.Len(t, server.GetApplications(), 1, "There should be one applications")
 		// Send a request to server with delayed response from requestHandler
 		request1 := jsonrpc.RPCRequest{
 			JSONRPC: "2.0",
@@ -1773,7 +1777,7 @@ func TestXSWDClosures(t *testing.T) {
 		_, _, err = testXSWDCall(t, conn, request1)
 		assert.Errorf(t, err, "Request 1a %s should error: %s", request1.Method, err)
 		time.Sleep(sleep10)
-		assert.Len(t, server.applications, 0, "There should be no applications")
+		assert.Len(t, server.GetApplications(), 0, "There should be no applications")
 
 		// Simulate a Allow permission and call again, but client should be already closed
 		server.requestHandler = func(ad *ApplicationData, r *jrpc2.Request) Permission { return Allow }
@@ -1783,12 +1787,12 @@ func TestXSWDClosures(t *testing.T) {
 
 	// Close the client while awaiting connection request
 	t.Run("Closure2", func(t *testing.T) {
-		assert.Len(t, server.applications, 0, "There should be no applications")
+		assert.Len(t, server.GetApplications(), 0, "There should be no applications")
 		// Create a websocket client to connect to the server
 		conn, err := testCreateClient(nil)
 		assert.NoErrorf(t, err, "Application failed to dial server: %s", err)
 		defer conn.Close()
-		assert.Len(t, server.applications, 0, "There should be no applications")
+		assert.Len(t, server.GetApplications(), 0, "There should be no applications")
 
 		// Simulate a connection request awaiting user input
 		server.appHandler = func(ad *ApplicationData) bool {
@@ -1806,7 +1810,7 @@ func TestXSWDClosures(t *testing.T) {
 		err = conn.WriteJSON(testAppData[1])
 		assert.NoErrorf(t, err, "Application failed to write data to server: %s", err)
 		time.Sleep(sleep10)
-		assert.Len(t, server.applications, 0, "There should be no applications")
+		assert.Len(t, server.GetApplications(), 0, "There should be no applications")
 		// Try to call but client should be closed
 		request1 := jsonrpc.RPCRequest{
 			JSONRPC: "2.0",
@@ -1816,10 +1820,10 @@ func TestXSWDClosures(t *testing.T) {
 		_, _, err = testXSWDCall(t, conn, request1)
 		assert.Errorf(t, err, "Request 1 %s should error: %s", request1.Method, err)
 		// Ensure app has been removed
-		assert.Len(t, server.applications, 0, "There should be no applications")
+		assert.Len(t, server.GetApplications(), 0, "There should be no applications")
 	})
 
-	assert.Len(t, server.applications, 0, "There should be no applications")
+	assert.Len(t, server.GetApplications(), 0, "There should be no applications")
 }
 
 // Test stopping the server when awaiting responses
@@ -1845,7 +1849,7 @@ func TestXSWDStop(t *testing.T) {
 		assert.NoErrorf(t, err, "Application failed to write data to server: %s", err)
 		authResponse := testHandleAuthResponse(t, conn)
 		assert.True(t, authResponse.Accepted, "Application should be accepted and is not")
-		assert.Len(t, server.applications, 1, "There should be one applications")
+		assert.Len(t, server.GetApplications(), 1, "There should be one applications")
 		// Send a request to server with delayed response from requestHandler
 		request1 := jsonrpc.RPCRequest{
 			JSONRPC: "2.0",
@@ -1853,22 +1857,29 @@ func TestXSWDStop(t *testing.T) {
 			Method:  "GetAddress",
 		}
 
-		// Close the server
+		// Close the server and wait for Stop to finish before checking state.
+		stopDone := make(chan struct{})
 		go func() {
 			time.Sleep(sleep25)
 			server.Stop()
+			close(stopDone)
 		}()
 
 		_, _, err = testXSWDCall(t, conn, request1)
 		assert.Errorf(t, err, "Request 1 %s should error: %s", request1.Method, err)
-		// Ensure app has been removed
-		assert.Len(t, server.applications, 0, "There should be no applications")
+		select {
+		case <-stopDone:
+		case <-time.After(3 * time.Second):
+			t.Fatal("XSWD Stop did not finish")
+		}
+		// Ensure app has been removed.
+		assert.Len(t, server.GetApplications(), 0, "There should be no applications")
 	})
 
 	// Stop the server when awaiting connection request,
 	// if server is stopped without killing program lifecycle app will not be added even if appHandler can return
 	t.Run("Stop2", func(t *testing.T) {
-		assert.Len(t, server.applications, 0, "There should be no applications")
+		assert.Len(t, server.GetApplications(), 0, "There should be no applications")
 		if !server.IsRunning() {
 			_, server, err = testNewXSWDServer(t, false, true, Allow)
 			assert.NoErrorf(t, err, "testNewXSWDServer should not error: %s", err)
@@ -1898,7 +1909,7 @@ func TestXSWDStop(t *testing.T) {
 		time.Sleep(time.Second * 2)
 		_, _, err = conn.ReadMessage()
 		assert.Error(t, err, "Application should not be connected")
-		assert.Len(t, server.applications, 0, "There should be no applications")
+		assert.Len(t, server.GetApplications(), 0, "There should be no applications")
 	})
 
 	// This will test server stop on initializing error
@@ -1915,7 +1926,7 @@ func TestXSWDStop(t *testing.T) {
 		assert.Nil(t, server2, "server2 should be nil")
 	})
 
-	assert.Len(t, server.applications, 0, "There should be no applications")
+	assert.Len(t, server.GetApplications(), 0, "There should be no applications")
 }
 
 // Test application request rate limit
@@ -1944,7 +1955,7 @@ func TestXSWDRateLimit(t *testing.T) {
 		assert.NoErrorf(t, err, "Application failed to write data to server: %s", err)
 		authResponse := testHandleAuthResponse(t, conn)
 		assert.True(t, authResponse.Accepted, "Application should be accepted and is not")
-		assert.Greater(t, len(server.applications), 0, "There should be one applications")
+		assert.Greater(t, len(server.GetApplications()), 0, "There should be one applications")
 
 		request := jsonrpc.RPCRequest{
 			JSONRPC: "2.0",
@@ -2012,7 +2023,7 @@ func TestXSWDRateLimit(t *testing.T) {
 	assert.True(t, exceeded, "Expecting this test to have exceeded rate limit and did not")
 	assert.True(t, notExceeded, "Expecting this test to have been within rate limit and was not")
 	time.Sleep(sleep10)
-	assert.Len(t, server.applications, 0, "There should be no applications left")
+	assert.Len(t, server.GetApplications(), 0, "There should be no applications left")
 
 	// Let requests back up while awaiting user to select permission
 	server.requestHandler = func(ad *ApplicationData, r *jrpc2.Request) Permission {
@@ -2030,7 +2041,7 @@ func TestXSWDRateLimit(t *testing.T) {
 	assert.NoErrorf(t, err, "Application failed to write data to server: %s", err)
 	authResponse := testHandleAuthResponse(t, conn)
 	assert.True(t, authResponse.Accepted, "Application should be accepted and is not")
-	assert.Greater(t, len(server.applications), 0, "There should be one applications")
+	assert.Greater(t, len(server.GetApplications()), 0, "There should be one applications")
 
 	request1 := jsonrpc.RPCRequest{
 		JSONRPC: "2.0",
@@ -2058,7 +2069,7 @@ func TestXSWDRateLimit(t *testing.T) {
 
 	assert.True(t, disconnected, "Expecting this test to have been disconnected for exceeding rate limit and was not")
 	time.Sleep(sleep10)
-	assert.Len(t, server.applications, 0, "There should be no applications left")
+	assert.Len(t, server.GetApplications(), 0, "There should be no applications left")
 }
 
 // Create a testnet wallet and start XSWD server for tests

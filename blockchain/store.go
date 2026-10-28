@@ -56,6 +56,14 @@ func (s *storage) Initialize(params map[string]interface{}) (err error) {
 	return nil
 }
 
+// Close releases the database handles owned by this storage instance.
+func (s *storage) Close() error {
+	if s.Balance_store != nil {
+		s.Balance_store.Close()
+	}
+	return s.Topo_store.Close()
+}
+
 func (s *storage) IsBalancesIntialized() bool {
 	var err error
 	var balancehash, random_hash [32]byte

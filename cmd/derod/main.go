@@ -212,6 +212,10 @@ func main() {
 	}
 
 	params["chain"] = chain
+	if bind, ok := globals.Arguments["--rpc-bind"]; ok && bind != nil {
+		params["--rpc-bind"] = bind
+	}
+	params["--simulator"] = globals.IsSimulator()
 
 	// since user is using a proxy, he definitely does not want to give out his IP
 	if globals.Arguments["--socks-proxy"] != nil {
@@ -845,8 +849,9 @@ func readline_loop(l *readline.Instance, chain *blockchain.Blockchain, logger lo
 			mempool_tx_count := len(chain.Mempool.Mempool_List_TX())
 			regpool_tx_count := len(chain.Regpool.Regpool_List_TX())
 
-			supply := blockchain.CalcSupply(uint64(chain.Get_Height()))
-			spendable_supply := blockchain.SpendableSupply(uint64(chain.Get_Height()))
+			statusHeight := uint64(chain.Get_Height())
+			supply := blockchain.CalcSupply(statusHeight)
+			spendable_supply := blockchain.SpendableSupplyOnNextBlock(statusHeight, globals.Config.Name, globals.IsSimulator(), globals.Config.MAJOR_HF3_HEIGHT)
 
 			hostname, _ := os.Hostname()
 			fmt.Printf("STATUS MENU for DERO HE Node - Hostname: %s\n\n", hostname)

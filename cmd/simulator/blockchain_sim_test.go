@@ -18,6 +18,7 @@ package main
 
 import "io"
 import "os"
+import "net"
 import "fmt"
 import "time"
 import "testing"
@@ -62,39 +63,103 @@ Options:
   --rpc-bind=<127.0.0.1:9999>    daemon RPC listens on this ip:port
   `
 
-const rpcport_test = "127.0.0.1:26001"
+// nextSimulatorRPCPort reserves an available loopback port for a test daemon.
+func nextSimulatorRPCPort(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve simulator RPC port: %v", err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release simulator RPC port reservation: %v", err)
+	}
+	return addr
+}
 
-var tmpdirectory = "/tmp/dsimulator"
+func connectSimulatorDaemon(t *testing.T, endpoint string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", endpoint, 100*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("simulator RPC listener %q not ready: %v", endpoint, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := walletapi.Connect(endpoint); err != nil {
+		t.Fatalf("connect wallet to simulator daemon %q: %v", endpoint, err)
+	}
+}
+
+func closeSimulatorDaemonConnection() {
+	client := walletapi.GetRPCClient()
+	if client != nil {
+		if client.WS != nil {
+			_ = client.WS.Close()
+		}
+		if client.RPC != nil {
+			client.RPC.Close()
+		}
+		client.WS = nil
+		client.RPC = nil
+	}
+	walletapi.Connected = false
+	walletapi.Daemon_Endpoint_Active = ""
+}
+
+func closeSimulatorWallets(wallets ...*walletapi.Wallet_Disk) {
+	for _, wallet := range wallets {
+		if wallet != nil {
+			wallet.Close_Encrypted_Wallet()
+		}
+	}
+}
 
 // start a chain in simulator mode
-func simulator_chain_start() (*blockchain.Blockchain, *derodrpc.RPCServer, map[string]interface{}) {
+func simulator_chain_start(t *testing.T) (*blockchain.Blockchain, *derodrpc.RPCServer, map[string]interface{}) {
+	t.Helper()
 	var err error
 	params := map[string]interface{}{}
 	params["--simulator"] = true
+	tmpdirectory := t.TempDir()
+	rpcport := nextSimulatorRPCPort(t)
 
 	parser := &docopt.Parser{
 		HelpHandler:  docopt.PrintHelpOnly,
 		OptionsFirst: true,
 	}
 
-	globals.Arguments, err = parser.ParseArgs(command_line_test, []string{"--data-dir", tmpdirectory, "--rpc-bind", rpcport_test, "--testnet"}, config.Version.String())
+	globals.Arguments, err = parser.ParseArgs(command_line_test, []string{"--data-dir", tmpdirectory, "--rpc-bind", rpcport, "--testnet"}, config.Version.String())
 	if err != nil {
-		//log.Fatalf("Error while parsing options err: %s\n", err)
+		t.Fatalf("parse simulator arguments: %v", err)
 		return nil, nil, nil
 	}
 
-	os.RemoveAll(tmpdirectory)
 	globals.Initialize() // setup network and proxy
 
 	chain, err := blockchain.Blockchain_Start(params)
-
 	if err != nil {
-		panic(err)
-		//	return nil, nil, nil
+		t.Fatalf("start simulator chain: %v", err)
+		return nil, nil, nil
 	}
 
 	params["chain"] = chain
-	rpcserver, _ := derodrpc.RPCServer_Start(params)
+	params["rpcport"] = rpcport
+	params["--rpc-bind"] = rpcport
+	rpcserver, err := derodrpc.RPCServer_Start(params)
+	if err != nil || rpcserver == nil {
+		chain.Shutdown()
+		if closeErr := chain.Store.Close(); closeErr != nil {
+			t.Errorf("close simulator store after RPC startup failure: %v", closeErr)
+		}
+		t.Fatalf("start simulator RPC server: %v", err)
+		return nil, nil, nil
+	}
 	return chain, rpcserver, params
 }
 
@@ -131,22 +196,28 @@ func simulator_chain_mineblock(chain *blockchain.Blockchain, miner_address rpc.A
 }
 
 func simulator_chain_stop(chain *blockchain.Blockchain, rpcserver *derodrpc.RPCServer) {
-	rpcserver.RPCServer_Stop()
-	chain.Shutdown() // shutdown chain subsysem
+	closeSimulatorDaemonConnection()
+	if rpcserver != nil {
+		rpcserver.RPCServer_Stop()
+	}
+	if chain == nil {
+		return
+	}
+	chain.Shutdown() // shutdown chain subsystem
+	if err := chain.Store.Close(); err != nil {
+		panic(err)
+	}
 }
 
 // this will test that the keys are placed properly and thus can be decoded by recievers
 func Test_Creation_TX(t *testing.T) {
 
-	time.Sleep(time.Millisecond)
-
 	walletapi.Initialize_LookupTable(1, 1<<17)
 
-	wsrc_temp_db := filepath.Join(os.TempDir(), "dero_temporary_test_wallet_src.db")
-	wdst_temp_db := filepath.Join(os.TempDir(), "dero_temporary_test_wallet_dst.db")
-
-	os.Remove(wsrc_temp_db)
-	os.Remove(wdst_temp_db)
+	walletTestDir := t.TempDir()
+	wsrc_temp_db := filepath.Join(walletTestDir, "source.db")
+	wdst_temp_db := filepath.Join(walletTestDir, "destination.db")
+	wgen_temp_db := filepath.Join(walletTestDir, "genesis.db")
 
 	wsrc, err := walletapi.Create_Encrypted_Wallet_From_Recovery_Words(wsrc_temp_db, "QWER", "sequence atlas unveil summon pebbles tuesday beer rudely snake rockets different fuselage woven tagged bested dented vegan hover rapid fawns obvious muppet randomly seasons randomly")
 	if err != nil {
@@ -158,7 +229,7 @@ func Test_Creation_TX(t *testing.T) {
 		t.Fatalf("Cannot create encrypted wallet, err %s", err)
 	}
 
-	wgenesis, err := walletapi.Create_Encrypted_Wallet_From_Recovery_Words(wdst_temp_db, "QWER", "perfil lujo faja puma favor pedir detalle doble carbón neón paella cuarto ánimo cuento conga correr dental moneda león donar entero logro realidad acceso doble")
+	wgenesis, err := walletapi.Create_Encrypted_Wallet_From_Recovery_Words(wgen_temp_db, "QWER", "perfil lujo faja puma favor pedir detalle doble carbón neón paella cuarto ánimo cuento conga correr dental moneda león donar entero logro realidad acceso doble")
 	if err != nil {
 		t.Fatalf("Cannot create encrypted wallet, err %s", err)
 	}
@@ -174,12 +245,11 @@ func Test_Creation_TX(t *testing.T) {
 	config.Testnet.Genesis_Block_Hash = genesis_block.GetHash()
 	config.Mainnet.Genesis_Block_Hash = genesis_block.GetHash()
 
-	chain, rpcserver, _ := simulator_chain_start()
+	chain, rpcserver, params := simulator_chain_start(t)
 	defer simulator_chain_stop(chain, rpcserver)
+	rpcport := params["rpcport"].(string)
 
-	globals.Arguments["--daemon-address"] = rpcport_test
-
-	go walletapi.Keep_Connectivity()
+	connectSimulatorDaemon(t, rpcport)
 
 	t.Logf("src %s\n", wsrc.GetAddress())
 	t.Logf("dst %s\n", wdst.GetAddress())
@@ -200,10 +270,8 @@ func Test_Creation_TX(t *testing.T) {
 	wsrc.SetOnlineMode()
 	wdst.SetOnlineMode()
 
-	defer os.Remove(wsrc_temp_db) // cleanup after test
-	defer os.Remove(wdst_temp_db) // cleanup after test
+	defer closeSimulatorWallets(wgenesis, wsrc, wdst)
 
-	time.Sleep(time.Second)
 	if err = wsrc.Sync_Wallet_Memory_With_Daemon(); err != nil {
 		t.Fatalf("wallet sync error err %s", err)
 	}
@@ -224,8 +292,10 @@ func Test_Creation_TX(t *testing.T) {
 		}
 	}
 
-	wsrc.SetRingSize(2)
-	wdst.SetRingSize(2)
+	// K0's testnet ring-size floor activates at genesis, so only use
+	// ring-size 4 for the NORMAL transfers accepted by this simulator chain.
+	wsrc.SetRingSize(4)
+	wdst.SetRingSize(4)
 
 	// accounts are reversed
 	reverse_tx, err := wdst.TransferPayload0([]rpc.Transfer{rpc.Transfer{Destination: wsrc.GetAddress().String(), Amount: 1}}, 0, false, rpc.Arguments{}, 0, false)
